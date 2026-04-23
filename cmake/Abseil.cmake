@@ -73,5 +73,13 @@ macro(p4c_obtain_abseil)
     set(FETCHCONTENT_QUIET ${FETCHCONTENT_QUIET_PREV})
   endif()
 
+  # Ensure the selected Abseil headers take precedence over generic system
+  # include roots such as Homebrew's /opt/homebrew/include. Otherwise we can
+  # compile against one Abseil LTS namespace and link against another.
+  get_target_property(ABSL_INCLUDE_DIRS absl::strings INTERFACE_INCLUDE_DIRECTORIES)
+  if (ABSL_INCLUDE_DIRS)
+    include_directories(BEFORE SYSTEM ${ABSL_INCLUDE_DIRS})
+  endif()
+
   message(STATUS "Done with setting up Abseil for P4C.")
 endmacro(p4c_obtain_abseil)

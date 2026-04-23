@@ -215,10 +215,11 @@ class NamedExpression : Declaration {
 }
 
 /// A token in an unparsed annotation.
-/// This should really be P4::P4Parser::symbol_type, but p4parser.hpp depends
-/// on the IR in a way that makes it difficult to #include in this file.
+/// `token_type` holds the ANTLR4 P4Lexer token id for this token (e.g.
+/// `::P4Lexer::STRING_LITERAL`). It is stored as a plain int so this .def file
+/// does not need to drag in the generated lexer header.
 class AnnotationToken {
-    int token_type;  // P4Parser::token_type in disguise.
+    int token_type;  // ::P4Lexer token type in disguise.
     cstring text;
     optional NullOK UnparsedConstant* constInfo = nullptr;
     dbprint { out << text; }

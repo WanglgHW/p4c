@@ -10,9 +10,6 @@
     ### P4C customization
     { include: ["\"ir/ir-generated.h\"", "private", "\"ir/ir.h\"", "public"] },
     { include: ["\"ir/ir-inline.h\"", "private", "\"ir/ir.h\"", "public"] },
-    { include: ["\"frontends/parsers/p4/p4lexer_internal.hpp\"", "private", "\"frontends/parsers/p4/p4lexer.hpp\"", "public"] },
-    { include: ["\"frontends/parsers/v1/v1lexer_internal.hpp\"", "private", "\"frontends/parsers/v1/v1lexer.hpp\"", "public"] },
-    { include: ["\"ir/ir-inline.h\"", "private", "\"ir/ir.h\"", "public"] },
 
     ##### Fixes imported from https://gitlab.cs.fau.de/flow/emper/-/blob/master/iwyu-mappings.imp
     { include: ["<bits/chrono.h>", "private", "<chrono>", "public"]},

@@ -115,87 +115,15 @@ genlex(
     visibility = ["//visibility:private"],
 )
 
-# The ir-generator tool uses a parser built by these genlex and genyacc rules.
-genlex(
-    name = "ir_generator_lex",
-    src = "tools/ir-generator/ir-generator-lex.l",
-    out = "tools/ir-generator/ir-generator-lex.c",
-    prefix = "yy",
-    visibility = ["//visibility:private"],
-)
-
-genyacc(
-    name = "ir_generator_yacc",
-    src = "tools/ir-generator/ir-generator.ypp",
-    header_out = "tools/ir-generator/ir-generator-yacc.hh",
-    source_out = "tools/ir-generator/ir-generator-yacc.cc",
-    visibility = ["//visibility:private"],
-)
-
-# This cc_library contains the ir-generator tool sources, including the
-# ir-generator parser source from the lex/yacc output. The srcs attribute
-# excludes generator.cpp since it is part of the cc_binary.
-cc_library(
-    name = "ir_generator_lib",
-    srcs = glob(
-        include = ["tools/ir-generator/*.cpp"],
-        exclude = ["tools/ir-generator/generator.cpp"],
-    ) + [
-        "tools/ir-generator/ir-generator-yacc.cc",
-    ],
-    hdrs = glob(["tools/ir-generator/*.h"]),
-    textual_hdrs = [
-        ":ir_generator_lex",
-        ":ir_generator_yacc",
-    ],
-    visibility = ["//visibility:private"],
-    deps = [
-        ":lib",
-    ],
-)
-
-# The next rule builds the ir-generator tool binary.
-cc_binary(
-    name = "ir_generator",
-    srcs = ["tools/ir-generator/generator.cpp"],
-    deps = [
-        ":ir_generator_lib",
-        ":lib",
-    ],
-)
-
+# IR source files are pre-generated and stored in the source tree under ir/.
+# No runtime generation step is required.
 filegroup(
-    name = "ir_extra_defs",
-    srcs = [
-        "frontends/p4-14/ir-v1.def",
-        "backends/bmv2/bmv2.def",
-        "backends/dpdk/dpdk.def",
-        "//backends/p4tools:ir_extension",
-        # p4c extensions can contribute to this file group using extensions.bzl.
-        "@p4c_ir_extensions//:ir_extension",
-    ],
-)
-
-genrule(
     name = "ir_generated_files",
-    srcs = glob(["ir/*.def"]) + [":ir_extra_defs"],
-    outs = [
+    srcs = [
         "ir/gen-tree-macro.h",
         "ir/ir-generated.cpp",
         "ir/ir-generated.h",
     ],
-    cmd = """
-        $(location :ir_generator) \
-            -t $(RULEDIR)/ir/gen-tree-macro.h \
-            -i $(RULEDIR)/ir/ir-generated.cpp \
-            -o $(RULEDIR)/ir/ir-generated.h \
-            $(location ir/base.def) \
-            $(location ir/type.def) \
-            $(location ir/expression.def) \
-            $(location ir/ir.def) \
-            $(locations :ir_extra_defs)
-    """,
-    tools = [":ir_generator"],
     visibility = ["//visibility:private"],
 )
 

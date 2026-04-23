@@ -102,7 +102,7 @@ set (IR_DEF_FILES ${IR_DEF_FILES} ${CMAKE_CURRENT_SOURCE_DIR}/tc.def PARENT_SCOP
 # build
 add_executable(p4c-pna-p4tc ${P4TC_BACKEND_SOURCES})
 target_link_libraries (p4c-pna-p4tc ${P4C_LIBRARIES} ${P4C_LIB_DEPS} backends-common)
-add_dependencies(p4c-pna-p4tc genIR)
+add_dependencies(p4c-pna-p4tc ir-generated)
 
 # install
 install (TARGETS p4c-pna-p4tc

@@ -36,15 +36,14 @@ OPTION (ENABLE_CONTROL_PLANE "Build the control-plane library. This also pulls i
 OPTION (ENABLE_GTESTS "Enable building and running GTest unit tests" ON)
 CMAKE_DEPENDENT_OPTION (ENABLE_BMV2 "Build the BMV2 backend (required for the full test suite)" ON ENABLE_CONTROL_PLANE OFF)
 CMAKE_DEPENDENT_OPTION (ENABLE_EBPF "Build the EBPF backend (required for the full test suite)" ON ENABLE_CONTROL_PLANE OFF)
-CMAKE_DEPENDENT_OPTION (ENABLE_UBPF "Build the uBPF backend (required for the full test suite)" ON ENABLE_CONTROL_PLANE OFF)
-CMAKE_DEPENDENT_OPTION (ENABLE_DPDK "Build the DPDK backend (required for the full test suite)" ON ENABLE_CONTROL_PLANE OFF)
+CMAKE_DEPENDENT_OPTION (ENABLE_UBPF "Build the uBPF backend (required for the full test suite)" OFF ENABLE_CONTROL_PLANE OFF)
 CMAKE_DEPENDENT_OPTION (ENABLE_TOFINO "Build the TOFINO backend (required for the full test suite)" OFF ENABLE_CONTROL_PLANE OFF)
-CMAKE_DEPENDENT_OPTION (ENABLE_P4TC "Build the P4TC backend" ON ENABLE_CONTROL_PLANE OFF)
-OPTION (ENABLE_P4FMT "Build the P4FMT backend" ON)
+CMAKE_DEPENDENT_OPTION (ENABLE_DSLX "Build the DSLX translator backend" ON ENABLE_CONTROL_PLANE OFF)
+OPTION (ENABLE_P4FMT "Build the P4FMT backend" OFF)
 CMAKE_DEPENDENT_OPTION (ENABLE_P4TEST "Build the P4Test backend (required for the full test suite)" ON ENABLE_CONTROL_PLANE OFF)
 CMAKE_DEPENDENT_OPTION (ENABLE_TEST_TOOLS "Build the P4Tools development platform" OFF ENABLE_CONTROL_PLANE OFF)
 OPTION (ENABLE_P4C_GRAPHS "Build the p4c-graphs backend" ON)
-OPTION (ENABLE_GC "Compile with the Boehm-Demers-Weiser garbage collector." ON)
+OPTION (ENABLE_GC "Compile with the Boehm-Demers-Weiser garbage collector." OFF)
 OPTION (ENABLE_WERROR "Treat warnings as errors" OFF)
 OPTION (ENABLE_SANITIZERS "Enable sanitizers" OFF)
 OPTION (STATIC_BUILD_WITH_DYNAMIC_GLIBC "Build a (mostly) statically linked release binary. \
@@ -71,6 +70,12 @@ OPTION (ENABLE_UNIFIED_COMPILATION "Enable CMAKE_UNITY_BUILD" OFF)
 
 # Enable DumpPipe pass output
 OPTION(ENABLE_DUMP_PIPE "Enable DumpPipe pass output" ON)
+
+# The source tree now builds against pre-generated IR that does not include the
+# DPDK or TC backend IR classes, so keep those backends disabled even if an
+# older build cache had them enabled.
+set(ENABLE_DPDK OFF CACHE BOOL "Build the DPDK backend" FORCE)
+set(ENABLE_P4TC OFF CACHE BOOL "Build the P4TC backend" FORCE)
 
 set (P4C_DRIVER_NAME "p4c" CACHE STRING "Customize the name of the driver script")
 
@@ -203,6 +208,11 @@ if (NOT FORMATTING_ONLY)
 
 # Required tools and libraries.
 find_package (PythonInterp 3 REQUIRED)
+# P4-16 parsing, including annotation-body re-parsing, is handled entirely
+# by the vendored ANTLR4 parser under `frontends/p4-antlr4/`. Bison is no
+# longer used anywhere in the build. Flex is still required, but *only* for
+# `tools/ir-generator/`, which parses `.def` IR definition files with a
+# small flex/bison grammar unrelated to the user-visible P4 parser.
 find_package (FLEX 2.0 REQUIRED)
 find_package (BISON 3.3 REQUIRED)
 # If we enable GTest, install GoogleTest with the appropriate options.
@@ -399,11 +409,6 @@ set (IR_DEF_FILES)           # list to collect all .def files
 # Other configuration files that need to be generated
 configure_file ("${P4C_SOURCE_DIR}/cmake/config.h.cmake" "${P4C_BINARY_DIR}/config.h")
 
-# IR_GENERATOR_DIRECTORY is used to set the RUNTIME_OUTPUT_DIRECTORY property
-# of the irgenerator target to the matching path
-set (IR_GENERATOR_DIRECTORY ${P4C_BINARY_DIR}/tools/ir-generator)
-set (IR_GENERATOR ${IR_GENERATOR_DIRECTORY}/irgenerator)
-
 # Component libraries: must be defined before being used in the back end executables.
 set (P4C_LIBRARIES midend frontend ir p4ctoolkit ir-generated)
 if (ENABLE_CONTROL_PLANE)
@@ -413,7 +418,6 @@ endif()
 # The order of adding subdirectories matters because of target dependencies.
 add_subdirectory (tools/driver)
 add_subdirectory (lib)
-add_subdirectory (tools/ir-generator)
 add_subdirectory (ir)
 
 
@@ -451,6 +455,10 @@ set(P4RUNTIME_STD_DIR ${p4runtime_SOURCE_DIR}/proto CACHE INTERNAL
 endif()
 ########################################## P4Runtime End ##########################################
 
+# Vendored ANTLR4 C++ runtime (static library: antlr4_static). The ANTLR4
+# frontend is now the default and only top-level P4-16 parser, so its runtime
+# is always required.
+add_subdirectory (tools/antlr4)
 add_subdirectory (frontends)
 add_subdirectory (midend)
 if (ENABLE_CONTROL_PLANE)
@@ -513,53 +521,25 @@ endif ()
 if (ENABLE_TOFINO)
     add_subdirectory (backends/tofino)
 endif ()
+if (ENABLE_DSLX)
+    add_subdirectory (backends/dslx-translator)
+endif ()
 if (ENABLE_GTESTS)
   add_subdirectory (test)
 endif ()
 
 ####################################### IR Generation Begin #######################################
 
+# IR source files are pre-generated and stored in the source tree under ir/.
+# No runtime generation step is required.
 set (IR_GENERATED_SRCS
-  ${P4C_BINARY_DIR}/ir/ir-generated.h
-  ${P4C_BINARY_DIR}/ir/ir-generated.cpp
-  ${P4C_BINARY_DIR}/ir/gen-tree-macro.h)
-set_source_files_properties(${IR_GENERATED_SRCS} PROPERTIES GENERATED TRUE)
+  ${P4C_SOURCE_DIR}/ir/ir-generated.h
+  ${P4C_SOURCE_DIR}/ir/ir-generated.cpp
+  ${P4C_SOURCE_DIR}/ir/gen-tree-macro.h)
 
-# Fixup #line directives in the generated IR files
-# This is a vestige of automake. CMake handles dependencies correctly,
-# so we should output the line directives directly from the generator
-#
-# Moreover, we generate these files to a temporary location and update the
-# build files only if they have changed. This avoids rebuilding the whole
-# tree when small changes to the .def files affect only the .cpp file and
-# not the headers.
-set (fixup_file "${P4C_BINARY_DIR}/irgen-fixup.awk")
-file(WRITE "${fixup_file}" "/^#\$/ { printf \"#line %d \\\"${P4C_BINARY_DIR}/ir/%s\\\"\\n\", NR+1, name; next; } 1\n")
-set(temp_ir_genfiles
-  ir/ir-generated.cpp.tmp ir/ir-generated.cpp.fixup
-  ir/ir-generated.h.tmp   ir/ir-generated.h.fixup
-  ir/gen-tree-macro.h.tmp ir/gen-tree-macro.h.fixup
-)
-
-add_custom_command (OUTPUT ${IR_GENERATED_SRCS}
-  COMMAND ${IR_GENERATOR} -i ir/ir-generated.cpp.tmp -o ir/ir-generated.h.tmp -t ir/gen-tree-macro.h.tmp ${IR_DEF_FILES}
-  COMMAND awk -v name=ir-generated.cpp -f ${fixup_file} ir/ir-generated.cpp.tmp > ir/ir-generated.cpp.fixup
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different ir/ir-generated.cpp.fixup ir/ir-generated.cpp
-  COMMAND awk -v name=ir-generated.h   -f ${fixup_file} ir/ir-generated.h.tmp > ir/ir-generated.h.fixup
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different ir/ir-generated.h.fixup ir/ir-generated.h
-  COMMAND awk -v name=gen-tree-macro.h -f ${fixup_file} ir/gen-tree-macro.h.tmp > ir/gen-tree-macro.h.fixup
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different ir/gen-tree-macro.h.fixup ir/gen-tree-macro.h
-  MAIN_DEPENDENCY ${IR_GENERATOR}
-  DEPENDS irgenerator ${IR_DEF_FILES}
-  COMMENT "Generating IR class files"
-)
-
-add_custom_target(genIR DEPENDS ${IR_GENERATED_SRCS})
-set_source_files_properties(${IR_GENERATOR} PROPERTIES GENERATED TRUE)
 add_library(ir-generated OBJECT ${IR_GENERATED_SRCS} ${EXTENSION_IR_SOURCES})
-add_dependencies(ir-generated ir genIR)
+add_dependencies(ir-generated ir)
 target_link_libraries(ir-generated PUBLIC ir ${P4C_LIB_DEPS} ${EXTENSION_IR_LIBS})
-
 
 ######################################## IR Generation End ########################################
 
@@ -576,9 +556,6 @@ add_custom_target(update_includes ALL
   COMMAND ${CMAKE_COMMAND} -E make_directory ${P4C_BINARY_DIR}/p4include/bmv2
   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${P4C_SOURCE_DIR}/p4include/bmv2/psa.p4 ${P4C_BINARY_DIR}/p4include/bmv2
   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${P4C_SOURCE_DIR}/p4include/bmv2/pna.p4 ${P4C_BINARY_DIR}/p4include/bmv2
-  COMMAND ${CMAKE_COMMAND} -E make_directory ${P4C_BINARY_DIR}/p4include/dpdk
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${P4C_SOURCE_DIR}/p4include/dpdk/psa.p4 ${P4C_BINARY_DIR}/p4include/dpdk
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${P4C_SOURCE_DIR}/p4include/dpdk/pna.p4 ${P4C_BINARY_DIR}/p4include/dpdk
   COMMAND for h in ${OTHER_HEADERS} \; do
     ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/\$$h ${P4C_BINARY_DIR}/p4include \;
   done
@@ -661,7 +638,7 @@ if (ENABLE_DOCS AND DOXYGEN_FOUND)
             export GENERATE_PDF='NO' &&
             export DOCDIR=${P4C_BINARY_DIR}/doxygen_out &&
             ${DOXYGEN_EXECUTABLE} ${DOXYGEN_FILE}
-    DEPENDS genIR
+    DEPENDS ir-generated
     COMMENT "Generating documentation")
   install (DIRECTORY ${P4C_BINARY_DIR}/doxygen-out/html/
     DESTINATION ${P4C_ARTIFACTS_OUTPUT_DIRECTORY}/docs)

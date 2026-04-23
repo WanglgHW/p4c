@@ -128,4 +128,4 @@ target_link_libraries(midend
   # For TypeMap / RefMap
   PRIVATE frontend
 )
-add_dependencies(midend genIR ir-generated)
+add_dependencies(midend ir-generated)

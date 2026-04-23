@@ -5,7 +5,7 @@
 
 #include "frontends/p4-14/fromv1.0/v1model.h"
 #include "frontends/p4/getV1ModelVersion.h"
-#include "frontends/parsers/p4/p4parser.hpp"
+#include "frontends/p4-antlr4/P4Lexer.h"
 #include "ir/dump.h"
 
 namespace P4::P4Fmt {
@@ -1120,8 +1120,7 @@ bool P4Formatter::preorder(const IR::Annotation *a) {
                 // thing by separating every token with a space.
                 builder.append(open);
                 visitCollection(body, " ", [&](const auto &tok) {
-                    bool haveStringLiteral =
-                        tok->token_type == P4::P4Parser::token_type::TOK_STRING_LITERAL;
+                    bool haveStringLiteral = tok->token_type == ::P4Lexer::STRING_LITERAL;
                     if (haveStringLiteral) builder.append("\"");
                     builder.append(tok->text);
                     if (haveStringLiteral) builder.append("\"");

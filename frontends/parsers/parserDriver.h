@@ -19,117 +19,49 @@ limitations under the License.
 
 #include <cstdio>
 #include <iostream>
-#include <string>
 #include <string_view>
+#include <utility>
 
-#include "frontends/p4/symbol_table.h"
-#include "frontends/parsers/p4/abstractP4Lexer.hpp"
-#include "frontends/parsers/p4/p4AnnotationLexer.hpp"
 #include "ir/ir.h"
 #include "lib/cstring.h"
 #include "lib/source_file.h"
 
 namespace P4 {
 
-class P4Lexer;
-class P4Parser;
+// Historically, `parserDriver.h` transitively pulled in the bison-generated
+// `p4parser.hpp`, which contained `using namespace literals;` inside
+// `namespace P4`. Many downstream translation units (e.g. frontend pass
+// implementations) rely on being able to write `"..."_cs` without qualifying
+// the literal. Preserve that behaviour here so the migration from flex/bison
+// to ANTLR4 does not force a cascade of edits across the codebase.
+using namespace literals;  // NOLINT(build/namespaces)
 
-/// The base class of ParserDrivers, which provide a high level interface to
-/// parsers and lexers and manage their state.
-class AbstractParserDriver {
+/// A parser driver for P4-16 programs.
+///
+/// All parsing is delegated to the ANTLR4-based driver under
+/// `frontends/p4-antlr4/`. This class exists solely to preserve the historical
+/// `P4ParserDriver::parse*` entry points that the rest of the compiler calls
+/// into. The flex/bison pipeline that previously backed these methods has been
+/// removed.
+class P4ParserDriver final {
  public:
-    virtual ~AbstractParserDriver() = 0;
-
- protected:
-    AbstractParserDriver();
-
-    ////////////////////////////////////////////////////////////////////////////
-    // Callbacks.
-    ////////////////////////////////////////////////////////////////////////////
-
-    /**
-     * Notify that the lexer has read a comment.
-     * @param text         The body of the comment, without the comment termination
-     * @param lineComment  If true this is a line comment starting with //
-     */
-    void onReadComment(const char *text, bool lineComment);
-
-    /// Notify that the lexer read a token. @text is the matched source text.
-    void onReadToken(const char *text);
-
-    /// Notify that the lexer read a line number from a #line directive.
-    void onReadLineNumber(const char *text);
-
-    /// Notify that the lexer read a filename from a #line directive.
-    void onReadFileName(const char *text);
-
-    /// Notify that the lexer read an identifier, @id.
-    void onReadIdentifier(cstring id);
-
-    /// Notify that an error was encountered during parsing at @location.
-    /// @message is a Bison-provided human-readable explanation of the error.
-    void onParseError(const Util::SourceInfo &location, const std::string &message);
-
-    ////////////////////////////////////////////////////////////////////////////
-    // Shared state manipulated directly by the lexer and parser.
-    ////////////////////////////////////////////////////////////////////////////
-
-    /// The input sources that comprise the P4 program we're parsing.
-    Util::InputSources *sources;
-
-    /// The location of the most recent token.
-    Util::SourceInfo yylloc;
-
-    /// Scratch storage for the lexer to remember its previous state.
-    int saveState = -1;
-
- private:
-    /// The line number from the most recent #line directive.
-    int lineDirectiveLine = 0;
-
-    /// The file name from the most recent #line directive.
-    cstring lineDirectiveFile;
-
-    /// The last identifier we encountered. This is used for error reporting.
-    cstring lastIdentifier;
-};
-
-/// A ParserDriver that can parse P4-16 programs.
-class P4ParserDriver final : public AbstractParserDriver {
- public:
-    /**
-     * Parse a P4-16 program.
-     *
-     * @param in    The input source to read the program from.
-     * @param sourceFile  The logical source filename. This doesn't have to be a
-     *                    real filename, though it normally will be. This is
-     *                    used for logging and to set the initial source
-     *                    location.
-     * @param sourceLine  The logical source line number. For programs parsed
-     *                    from a file, this will normally be 1. This is used to
-     *                    set the initial source location.
-     * @returns a P4Program object if parsing was successful, or null otherwise.
-     */
+    /// Parse a P4-16 program.
     static const IR::P4Program *parse(std::istream &in, std::string_view sourceFile,
                                       unsigned sourceLine = 1);
     static const IR::P4Program *parse(FILE *in, std::string_view sourceFile,
                                       unsigned sourceLine = 1);
 
-    /// Parses the input and returns a pair with the P4Program and InputSources.
-    /// Use this when both the parsed P4Program and InputSources are required,
-    /// as opposed to the `parse` method, which only returns the P4Program.
+    /// Parse and return both the P4Program and the populated InputSources.
     static std::pair<const IR::P4Program *, const Util::InputSources *> parseProgramSources(
         std::istream &in, std::string_view sourceFile, unsigned sourceLine = 1);
 
     static std::pair<const IR::P4Program *, const Util::InputSources *> parseProgramSources(
         FILE *in, std::string_view sourceFile, unsigned sourceLine = 1);
 
-    /**
-     * Parses a P4-16 annotation body.
-     *
-     * @param body  The unparsed annotation body.
-     * @returns an AST node if parsing was successful, or null otherwise.
-     */
+    // Annotation-body re-parsing. Each method takes the unparsed token stream
+    // stored on the annotation and returns a typed IR node, or nullptr on
+    // syntax error.
+
     // Lists /////////////////////////////////////////////////////////////////
     static const IR::Vector<IR::Expression> *parseExpressionList(
         const Util::SourceInfo &srcInfo, const IR::Vector<IR::AnnotationToken> &body);
@@ -182,119 +114,21 @@ class P4ParserDriver final : public AbstractParserDriver {
     // P4Runtime Annotations /////////////////////////////////////////////////
     static const IR::Vector<IR::Expression> *parseP4rtTranslationAnnotation(
         const Util::SourceInfo &srcInfo, const IR::Vector<IR::AnnotationToken> &body);
-
- protected:
-    friend class P4::P4Lexer;
-    friend class P4::P4Parser;
-
-    /// Notify that the parser parsed a P4 `error` declaration.
-    //  @return true if this is the first error declaration, false if it has
-    //          been combined into a previous one (and should be elided)
-    bool onReadErrorDeclaration(IR::Type_Error *error);
-
-    ////////////////////////////////////////////////////////////////////////////
-    // Shared state manipulated directly by the lexer and parser.
-    ////////////////////////////////////////////////////////////////////////////
-
-    /// Semantic information about the program being parsed.
-    Util::ProgramStructure *structure = nullptr;
-
-    /// The top-level object that makes up the P4 program (or program fragment)
-    /// we're parsing.
-    IR::Node *result = nullptr;
-
-    /// A scratch buffer to hold the current string literal. (They're lexed
-    /// incrementally, so we need to hold some state between tokens.)
-    std::string stringLiteral;
-
-    // flag to track when template args are expected, to adjust the precedence
-    // of '<'
-    bool template_args = false;
-
- private:
-    P4ParserDriver();
-
-    /// Common functionality for parsing.
-    bool parse(AbstractP4Lexer &lexer, std::string_view sourceFile, unsigned sourceLine = 1);
-
-    /// Common functionality for parsing annotation bodies.
-    template <typename T>
-    const T *parse(P4AnnotationLexer::Type type, const Util::SourceInfo &srcInfo,
-                   const IR::Vector<IR::AnnotationToken> &body);
-
-    /// All P4 `error` declarations are merged together in the node, which is
-    /// lazily created the first time we see an `error` declaration. (This node
-    /// is present in @declarations as well.)
-    IR::Type_Error *allErrors = nullptr;
 };
 
 }  // namespace P4
 
 namespace P4::V1 {
 
-class V1Lexer;
-class V1Parser;
-
-/// A ParserDriver that can parse P4-14 programs.
-class V1ParserDriver final : public P4::AbstractParserDriver {
+/// P4-14 parsing is no longer supported. The flex/bison v1 parser has been
+/// removed; these entry points remain only so that callers still compile and
+/// report a clear error.
+class V1ParserDriver final {
  public:
-    /**
-     * Parse a P4-14 program.
-     *
-     * @param in    The input source to read the program from.
-     * @param sourceFile  The logical source filename. This doesn't have to be a
-     *                    real filename, though it normally will be. This is
-     *                    used for logging and to set the initial source
-     *                    location.
-     * @param sourceLine  The logical source line number. For programs parsed
-     *                    from a file, this will normally be 1. This is used to
-     *                    set the initial source location.
-     * @returns a V1Program object if parsing was successful, or null otherwise.
-     */
     static const IR::V1Program *parse(std::istream &in, std::string_view sourceFile,
                                       unsigned sourceLine = 1);
     static const IR::V1Program *parse(FILE *in, std::string_view sourceFile,
                                       unsigned sourceLine = 1);
-
- protected:
-    friend class V1::V1Lexer;
-    friend class V1::V1Parser;
-
-    /**
-     * The P4-14 parser performs constant folding to ensure that constant
-     * expressions in the grammar actually produce IR::Constant values in the
-     * resulting IR.
-     *
-     * @return an IR::Constant containing the value of @expr, if @expr is a
-     * constant expression, or null otherwise.
-     */
-    IR::Constant *constantFold(IR::Expression *expr);
-
-    /// @return a vector of IR::Expressions containing an IR::StringLiteral for
-    /// name in @list.
-    IR::Vector<IR::Expression> makeExpressionList(const IR::NameList *list);
-
-    /// Clear the list of active pragmas.
-    void clearPragmas();
-
-    /// Add @pragma to the list of active pragmas.
-    void addPragma(IR::Annotation *pragma);
-
-    /// @return a IR::Vector containing the active pragmas, and clear the list.
-    IR::Vector<IR::Annotation> takePragmasAsVector();
-
-    ////////////////////////////////////////////////////////////////////////////
-    // Shared state manipulated directly by the lexer and parser.
-    ////////////////////////////////////////////////////////////////////////////
-
-    /// The root of the IR tree we're constructing.
-    IR::V1Program *global = nullptr;
-
- private:
-    /// The currently active pragmas.
-    IR::Vector<IR::Annotation> currentPragmas;
-
-    V1ParserDriver();
 };
 
 }  // namespace P4::V1

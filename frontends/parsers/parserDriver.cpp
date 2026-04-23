@@ -1,367 +1,160 @@
+/*
+Copyright 2013-present Barefoot Networks, Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 #include "parserDriver.h"
 
-#include <cerrno>
 #include <cstdio>
 #include <iostream>
-#include <sstream>
+#include <string>
 #include <string_view>
+#include <utility>
 
-#include <boost/format.hpp>
-
-#include "frontends/common/constantFolding.h"
-#include "frontends/common/options.h"
-#include "frontends/parsers/p4/p4AnnotationLexer.hpp"
-#include "frontends/parsers/p4/p4lexer.hpp"
-#include "frontends/parsers/p4/p4parser.hpp"
-#include "frontends/parsers/v1/v1lexer.hpp"
-#include "frontends/parsers/v1/v1parser.hpp"
+#include "frontends/p4-antlr4/antlr4ParserDriver.h"
 #include "lib/error.h"
 
-#ifdef HAVE_LIBBOOST_IOSTREAMS
-
-#include <boost/iostreams/device/file_descriptor.hpp>
-#include <boost/iostreams/stream.hpp>
-
-namespace {
-
-/// A RAII helper class that provides an istream wrapper for a stdio FILE*. This
-/// is the efficient implementation for users with boost::iostreams installed.
-struct AutoStdioInputStream {
-    explicit AutoStdioInputStream(FILE *in)
-        : source(fileno(in), boost::iostreams::never_close_handle),
-          buffer(source),
-          stream(&buffer) {}
-
-    std::istream &get() { return stream; }
-
- private:
-    AutoStdioInputStream(const AutoStdioInputStream &) = delete;
-    AutoStdioInputStream(AutoStdioInputStream &&) = delete;
-
-    boost::iostreams::file_descriptor_source source;
-    boost::iostreams::stream_buffer<boost::iostreams::file_descriptor_source> buffer;
-    std::istream stream;
-};
-
-}  // namespace
-
-#else
-
-namespace {
-
-/// A RAII helper class that provides an istream wrapper for a stdio FILE*. This
-/// is an inefficient fallback implementation.
-struct AutoStdioInputStream {
-    explicit AutoStdioInputStream(FILE *in) {
-        char buffer[512];
-        while (fgets(buffer, sizeof(buffer), in)) stream << buffer;
-    }
-
-    std::istream &get() { return stream; }
-
- private:
-    std::stringstream stream;
-};
-
-}  // namespace
-
-#endif
-
 namespace P4 {
-
-AbstractParserDriver::AbstractParserDriver() : sources(new Util::InputSources()) {}
-
-AbstractParserDriver::~AbstractParserDriver() {}
-
-void AbstractParserDriver::onReadToken(const char *text) {
-    auto posBeforeToken = sources->getCurrentPosition();
-    sources->appendText(text);
-    auto posAfterToken = sources->getCurrentPosition();
-    yylloc = Util::SourceInfo(sources, posBeforeToken, posAfterToken);
-}
-
-void AbstractParserDriver::onReadLineNumber(const char *text) {
-    char *last;
-    errno = 0;
-    lineDirectiveLine = strtol(text, &last, 10);
-    const bool consumedEntireToken = strlen(last) == 0;
-    if (errno != 0 || !consumedEntireToken) {
-        auto &context = BaseCompileContext::get();
-        context.errorReporter().parser_error(sources, "Error parsing line number %s", text);
-    }
-}
-
-void AbstractParserDriver::onReadComment(const char *text, bool lineComment) {
-    sources->addComment(yylloc, lineComment, cstring(text));
-}
-
-void AbstractParserDriver::onReadFileName(const char *text) {
-    lineDirectiveFile = cstring(text);
-    sources->mapLine(text, lineDirectiveLine);
-}
-
-void AbstractParserDriver::onReadIdentifier(cstring id) { lastIdentifier = id; }
-
-void AbstractParserDriver::onParseError(const Util::SourceInfo &location,
-                                        const std::string &message) {
-    static const std::string_view unexpectedIdentifierError = "syntax error, unexpected IDENTIFIER";
-    auto &context = BaseCompileContext::get();
-    if (message == unexpectedIdentifierError) {
-        context.errorReporter().parser_error(
-            location, boost::format("%s \"%s\"") % unexpectedIdentifierError % lastIdentifier);
-    } else {
-        context.errorReporter().parser_error(location, message);
-    }
-}
-
-P4ParserDriver::P4ParserDriver() : structure(new Util::ProgramStructure) {}
-
-bool P4ParserDriver::parse(AbstractP4Lexer &lexer, std::string_view sourceFile,
-                           unsigned sourceLine /* = 1 */) {
-    // Create and configure the parser.
-    P4Parser parser(*this, lexer);
-
-#ifdef YYDEBUG
-    if (const char *p = getenv("YYDEBUG")) parser.set_debug_level(atoi(p));
-    structure->setDebug(parser.debug_level() != 0);
-#endif
-
-    // Provide an initial source location.
-    sources->mapLine(sourceFile, sourceLine);
-
-    // Parse.
-    if (parser.parse() != 0) return false;
-    structure->endParse();
-    return true;
-}
 
 /* static */ const IR::P4Program *P4ParserDriver::parse(std::istream &in,
                                                         std::string_view sourceFile,
                                                         unsigned sourceLine /* = 1 */) {
-    LOG1("Parsing P4-16 program " << sourceFile);
-
-    P4ParserDriver driver;
-    P4Lexer lexer(in);
-    if (!driver.parse(lexer, sourceFile, sourceLine)) return nullptr;
-    IR::P4Program *rv = driver.result->to<IR::P4Program>();
-    BUG_CHECK(rv, "parse result is not a program?");
-    return rv;
+    return P4ANTLR::Antlr4ParserDriver::parse(in, sourceFile, sourceLine);
 }
 
 /* static */ const IR::P4Program *P4ParserDriver::parse(FILE *in, std::string_view sourceFile,
                                                         unsigned sourceLine /* = 1 */) {
-    AutoStdioInputStream inputStream(in);
-    return parse(inputStream.get(), sourceFile, sourceLine);
+    return P4ANTLR::Antlr4ParserDriver::parse(in, sourceFile, sourceLine);
 }
 
 /* static */ std::pair<const IR::P4Program *, const Util::InputSources *>
 P4ParserDriver::parseProgramSources(std::istream &in, std::string_view sourceFile,
                                     unsigned sourceLine /* = 1 */) {
-    P4ParserDriver driver;
-    P4Lexer lexer(in);
-    if (!driver.parse(lexer, sourceFile, sourceLine)) {
-        return {nullptr, nullptr};
-    }
-
-    auto *program = driver.result->to<IR::P4Program>();
-    BUG_CHECK(program, "parse result is not a program?");
-    const Util::InputSources *sources = driver.sources;
-
-    return {program, sources};
+    return P4ANTLR::Antlr4ParserDriver::parseProgramSources(in, sourceFile, sourceLine);
 }
 
-/*static */ std::pair<const IR::P4Program *, const Util::InputSources *>
+/* static */ std::pair<const IR::P4Program *, const Util::InputSources *>
 P4ParserDriver::parseProgramSources(FILE *in, std::string_view sourceFile,
                                     unsigned sourceLine /* = 1 */) {
-    AutoStdioInputStream inputStream(in);
-    return parseProgramSources(inputStream.get(), sourceFile, sourceLine);
+    return P4ANTLR::Antlr4ParserDriver::parseProgramSources(in, sourceFile, sourceLine);
 }
 
-template <typename T>
-const T *P4ParserDriver::parse(P4AnnotationLexer::Type type, const Util::SourceInfo &srcInfo,
-                               const IR::Vector<IR::AnnotationToken> &body) {
-    LOG3("Parsing P4-16 annotation " << srcInfo);
-
-    P4AnnotationLexer lexer(type, srcInfo, body);
-    if (!parse(lexer, srcInfo.getSourceFile())) {
-        return nullptr;
-    }
-
-    return result->to<T>();
-}
+// Annotation-body re-parsing. Each method forwards to the matching
+// `Antlr4ParserDriver::parseAnn*` entry point. The ANTLR4 driver handles the
+// re-lex + fragment-rule parse + IR construction internally.
 
 /* static */ const IR::Vector<IR::Expression> *P4ParserDriver::parseExpressionList(
     const Util::SourceInfo &srcInfo, const IR::Vector<IR::AnnotationToken> &body) {
-    P4ParserDriver driver;
-    return driver.parse<IR::Vector<IR::Expression>>(P4AnnotationLexer::EXPRESSION_LIST, srcInfo,
-                                                    body);
+    return P4ANTLR::Antlr4ParserDriver::parseAnnExpressionList(srcInfo, body);
 }
 
 /* static */ const IR::IndexedVector<IR::NamedExpression> *P4ParserDriver::parseKvList(
     const Util::SourceInfo &srcInfo, const IR::Vector<IR::AnnotationToken> &body) {
-    P4ParserDriver driver;
-    return driver.parse<IR::IndexedVector<IR::NamedExpression>>(P4AnnotationLexer::KV_LIST, srcInfo,
-                                                                body);
+    return P4ANTLR::Antlr4ParserDriver::parseAnnKvList(srcInfo, body);
 }
 
 /* static */ const IR::Vector<IR::Expression> *P4ParserDriver::parseConstantList(
     const Util::SourceInfo &srcInfo, const IR::Vector<IR::AnnotationToken> &body) {
-    P4ParserDriver driver;
-    return driver.parse<IR::Vector<IR::Expression>>(P4AnnotationLexer::INTEGER_LIST, srcInfo, body);
+    return P4ANTLR::Antlr4ParserDriver::parseAnnIntegerList(srcInfo, body);
 }
 
 /* static */ const IR::Vector<IR::Expression> *P4ParserDriver::parseConstantOrStringLiteralList(
     const Util::SourceInfo &srcInfo, const IR::Vector<IR::AnnotationToken> &body) {
-    P4ParserDriver driver;
-    return driver.parse<IR::Vector<IR::Expression>>(
-        P4AnnotationLexer::INTEGER_OR_STRING_LITERAL_LIST, srcInfo, body);
+    return P4ANTLR::Antlr4ParserDriver::parseAnnIntOrStrList(srcInfo, body);
 }
 
 /* static */ const IR::Vector<IR::Expression> *P4ParserDriver::parseStringLiteralList(
     const Util::SourceInfo &srcInfo, const IR::Vector<IR::AnnotationToken> &body) {
-    P4ParserDriver driver;
-    return driver.parse<IR::Vector<IR::Expression>>(P4AnnotationLexer::STRING_LITERAL_LIST, srcInfo,
-                                                    body);
+    return P4ANTLR::Antlr4ParserDriver::parseAnnStringList(srcInfo, body);
 }
 
 /* static */ const IR::Expression *P4ParserDriver::parseExpression(
     const Util::SourceInfo &srcInfo, const IR::Vector<IR::AnnotationToken> &body) {
-    P4ParserDriver driver;
-    return driver.parse<IR::Expression>(P4AnnotationLexer::EXPRESSION, srcInfo, body);
+    return P4ANTLR::Antlr4ParserDriver::parseAnnExpression(srcInfo, body);
 }
 
 /* static */ const IR::Constant *P4ParserDriver::parseConstant(
     const Util::SourceInfo &srcInfo, const IR::Vector<IR::AnnotationToken> &body) {
-    P4ParserDriver driver;
-    return driver.parse<IR::Constant>(P4AnnotationLexer::INTEGER, srcInfo, body);
+    return P4ANTLR::Antlr4ParserDriver::parseAnnInteger(srcInfo, body);
 }
 
 /* static */ const IR::Expression *P4ParserDriver::parseConstantOrStringLiteral(
     const Util::SourceInfo &srcInfo, const IR::Vector<IR::AnnotationToken> &body) {
-    P4ParserDriver driver;
-    return driver.parse<IR::Expression>(P4AnnotationLexer::INTEGER_OR_STRING_LITERAL, srcInfo,
-                                        body);
+    return P4ANTLR::Antlr4ParserDriver::parseAnnIntOrStr(srcInfo, body);
 }
 
 /* static */ const IR::StringLiteral *P4ParserDriver::parseStringLiteral(
     const Util::SourceInfo &srcInfo, const IR::Vector<IR::AnnotationToken> &body) {
-    P4ParserDriver driver;
-    return driver.parse<IR::StringLiteral>(P4AnnotationLexer::STRING_LITERAL, srcInfo, body);
+    return P4ANTLR::Antlr4ParserDriver::parseAnnStringLiteral(srcInfo, body);
 }
 
 /* static */ const IR::Vector<IR::Expression> *P4ParserDriver::parseExpressionPair(
     const Util::SourceInfo &srcInfo, const IR::Vector<IR::AnnotationToken> &body) {
-    P4ParserDriver driver;
-    return driver.parse<IR::Vector<IR::Expression>>(P4AnnotationLexer::EXPRESSION_PAIR, srcInfo,
-                                                    body);
+    return P4ANTLR::Antlr4ParserDriver::parseAnnExpressionPair(srcInfo, body);
 }
 
 /* static */ const IR::Vector<IR::Expression> *P4ParserDriver::parseConstantPair(
     const Util::SourceInfo &srcInfo, const IR::Vector<IR::AnnotationToken> &body) {
-    P4ParserDriver driver;
-    return driver.parse<IR::Vector<IR::Expression>>(P4AnnotationLexer::INTEGER_PAIR, srcInfo, body);
+    return P4ANTLR::Antlr4ParserDriver::parseAnnIntegerPair(srcInfo, body);
 }
 
 /* static */ const IR::Vector<IR::Expression> *P4ParserDriver::parseStringLiteralPair(
     const Util::SourceInfo &srcInfo, const IR::Vector<IR::AnnotationToken> &body) {
-    P4ParserDriver driver;
-    return driver.parse<IR::Vector<IR::Expression>>(P4AnnotationLexer::STRING_LITERAL_PAIR, srcInfo,
-                                                    body);
+    return P4ANTLR::Antlr4ParserDriver::parseAnnStringPair(srcInfo, body);
 }
 
 /* static */ const IR::Vector<IR::Expression> *P4ParserDriver::parseExpressionTriple(
     const Util::SourceInfo &srcInfo, const IR::Vector<IR::AnnotationToken> &body) {
-    P4ParserDriver driver;
-    return driver.parse<IR::Vector<IR::Expression>>(P4AnnotationLexer::EXPRESSION_TRIPLE, srcInfo,
-                                                    body);
+    return P4ANTLR::Antlr4ParserDriver::parseAnnExpressionTriple(srcInfo, body);
 }
 
 /* static */ const IR::Vector<IR::Expression> *P4ParserDriver::parseConstantTriple(
     const Util::SourceInfo &srcInfo, const IR::Vector<IR::AnnotationToken> &body) {
-    P4ParserDriver driver;
-    return driver.parse<IR::Vector<IR::Expression>>(P4AnnotationLexer::INTEGER_TRIPLE, srcInfo,
-                                                    body);
+    return P4ANTLR::Antlr4ParserDriver::parseAnnIntegerTriple(srcInfo, body);
 }
 
 /* static */ const IR::Vector<IR::Expression> *P4ParserDriver::parseStringLiteralTriple(
     const Util::SourceInfo &srcInfo, const IR::Vector<IR::AnnotationToken> &body) {
-    P4ParserDriver driver;
-    return driver.parse<IR::Vector<IR::Expression>>(P4AnnotationLexer::STRING_LITERAL_TRIPLE,
-                                                    srcInfo, body);
+    return P4ANTLR::Antlr4ParserDriver::parseAnnStringTriple(srcInfo, body);
 }
 
 /* static */ const IR::Vector<IR::Expression> *P4ParserDriver::parseP4rtTranslationAnnotation(
     const Util::SourceInfo &srcInfo, const IR::Vector<IR::AnnotationToken> &body) {
-    P4ParserDriver driver;
-    return driver.parse<IR::Vector<IR::Expression>>(P4AnnotationLexer::P4RT_TRANSLATION_ANNOTATION,
-                                                    srcInfo, body);
-}
-
-bool P4ParserDriver::onReadErrorDeclaration(IR::Type_Error *error) {
-    if (allErrors == nullptr) {
-        allErrors = error;
-        return true;
-    }
-    allErrors->members.append(error->members);
-    return false;
+    return P4ANTLR::Antlr4ParserDriver::parseAnnP4rtTranslation(srcInfo, body);
 }
 
 }  // namespace P4
 
 namespace P4::V1 {
 
-V1ParserDriver::V1ParserDriver() : global(new IR::V1Program) {}
-
-/* static */ const IR::V1Program *V1ParserDriver::parse(std::istream &in,
+/* static */ const IR::V1Program *V1ParserDriver::parse(std::istream & /*in*/,
                                                         std::string_view sourceFile,
-                                                        unsigned sourceLine /* = 1 */) {
-    LOG1("Parsing P4-14 program " << sourceFile);
-
-    // Create and configure the parser and lexer.
-    V1ParserDriver driver;
-    V1Lexer lexer(in);
-    V1Parser parser(driver, lexer);
-
-#ifdef YYDEBUG
-    if (const char *p = getenv("YYDEBUG")) parser.set_debug_level(atoi(p));
-#endif
-
-    // Provide an initial source location.
-    driver.sources->mapLine(sourceFile, sourceLine);
-
-    // Parse.
-    if (parser.parse() != 0) return nullptr;
-    return driver.global;
+                                                        unsigned /*sourceLine*/) {
+    ::P4::error(ErrorType::ERR_UNSUPPORTED,
+                "%1%: P4-14 (v1) programs are no longer supported; the flex/bison v1 "
+                "parser has been removed. Please convert to P4-16.",
+                std::string(sourceFile));
+    return nullptr;
 }
 
-/* static */ const IR::V1Program *V1ParserDriver::parse(FILE *in, std::string_view sourceFile,
-                                                        unsigned sourceLine /* = 1 */) {
-    AutoStdioInputStream inputStream(in);
-    return parse(inputStream.get(), sourceFile, sourceLine);
-}
-
-IR::Constant *V1ParserDriver::constantFold(IR::Expression *expr) {
-    IR::Node *node(expr);
-    auto rv = node->apply(P4::DoConstantFolding())->to<IR::Constant>();
-    return rv ? new IR::Constant(rv->srcInfo, rv->type, rv->value, rv->base) : nullptr;
-}
-
-IR::Vector<IR::Expression> V1ParserDriver::makeExpressionList(const IR::NameList *list) {
-    IR::Vector<IR::Expression> rv;
-    for (auto &name : list->names) rv.push_back(new IR::StringLiteral(name));
-    return rv;
-}
-
-void V1ParserDriver::clearPragmas() { currentPragmas.clear(); }
-
-void V1ParserDriver::addPragma(IR::Annotation *pragma) {
-    if (!P4CContext::get().options().isAnnotationDisabled(pragma)) currentPragmas.push_back(pragma);
-}
-
-IR::Vector<IR::Annotation> V1ParserDriver::takePragmasAsVector() {
-    IR::Vector<IR::Annotation> pragmas;
-    std::swap(pragmas, currentPragmas);
-    return pragmas;
+/* static */ const IR::V1Program *V1ParserDriver::parse(FILE * /*in*/, std::string_view sourceFile,
+                                                        unsigned /*sourceLine*/) {
+    ::P4::error(ErrorType::ERR_UNSUPPORTED,
+                "%1%: P4-14 (v1) programs are no longer supported; the flex/bison v1 "
+                "parser has been removed. Please convert to P4-16.",
+                std::string(sourceFile));
+    return nullptr;
 }
 
 }  // namespace P4::V1

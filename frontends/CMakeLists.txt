@@ -240,51 +240,23 @@ set (V1_FRONTEND_HDRS
 
 set (PARSERS_SRCS
   parsers/parserDriver.cpp
-  parsers/p4/p4AnnotationLexer.cpp
   )
 
 set (PARSERS_HDRS
   parsers/parserDriver.h
-  parsers/p4/abstractP4Lexer.hpp
-  parsers/p4/p4AnnotationLexer.hpp
   )
 
-macro(add_parser pname)
-  add_custom_target (mk${pname}dirs
-    ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/parsers/${pname})
-
-  # CMake generates a file with the same name automatically and then issues a warning because the
-  # file gets overwritten, so we need this code to avoid warning spew during compilation.
-  BISON_TARGET (${pname}Parser parsers/${pname}/${pname}parser.ypp ${CMAKE_CURRENT_BINARY_DIR}/parsers/${pname}/${pname}parser.cpp VERBOSE COMPILE_FLAGS "-Werror=conflicts-sr -Werror=conflicts-rr")
-
-  # regardless of the output name, flex puts out yy.lex.c, so we use a custom command to generate
-  # the file to stdout and redirect to the desired name
-  set (FLEX_${pname}Lexer_OUTPUTS ${CMAKE_CURRENT_BINARY_DIR}/parsers/${pname}/${pname}lexer.cc)
-  set (FLEX_${pname}_INPUT ${CMAKE_CURRENT_SOURCE_DIR}/parsers/${pname}/${pname}lexer.ll)
-  add_custom_command (OUTPUT ${FLEX_${pname}Lexer_OUTPUTS}
-    COMMAND ${FLEX_EXECUTABLE} -t ${FLEX_${pname}_INPUT} > ${FLEX_${pname}Lexer_OUTPUTS}
-    DEPENDS ${BISON_${pname}Parser_OUTPUTS} ${FLEX_${pname}_INPUT}
-    COMMENT "Running Flex on parsers/${pname}")
-
-  set (${pname}PARSER_GEN_SRCS
-    ${FLEX_${pname}Lexer_OUTPUTS}
-    ${BISON_${pname}Parser_OUTPUTS}
-    )
-  set_source_files_properties(${${pname}PARSER_GEN_SRCS} PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
-
-endmacro(add_parser)
-
-add_parser(v1)
-add_parser(p4)
-
-add_library (frontend-parser-gen OBJECT ${p4PARSER_GEN_SRCS} ${v1PARSER_GEN_SRCS})
-target_link_libraries (frontend-parser-gen
-  # Make sure to also expose the compile flags associated with the ir library.
-  PUBLIC ir
-  # These libraries are exposed by a header.
-  PUBLIC p4ctoolkit
-)
-add_dependencies (frontend-parser-gen mkp4dirs mkv1dirs ir-generated)
+# ---------------------------------------------------------------------------
+# Parsing
+#
+# All P4-16 parsing is handled by the ANTLR4-based frontend under
+# `p4-antlr4/`. Flex and bison are no longer used anywhere in the frontend:
+# `P4ParserDriver::parse*` (including annotation-body re-parsing) forwards to
+# `Antlr4ParserDriver` under the hood.
+#
+# P4-14 (v1) programs are no longer supported: the flex/bison v1 parser has
+# been removed from the build. `V1ParserDriver::parse` stubs out to an error.
+# ---------------------------------------------------------------------------
 
 set (FRONTEND_SOURCES
   ${COMMON_FRONTEND_SRCS}
@@ -299,14 +271,18 @@ set (FRONTEND_CPPLINT_FILES
   ${V1_FRONTEND_SRCS} ${V1_FRONTEND_HDRS}
   ${PARSERS_SRCS} ${PARSERS_HDRS})
 
-if (FLEX_INCLUDE_DIRS)
-  include_directories (${FLEX_INCLUDE_DIRS})
-endif ()
+# The ANTLR4 frontend is mandatory: it is the default (and only) top-level
+# P4-16 parser. Build it before the `frontend` library so that library can
+# link against it.
+add_subdirectory (p4-antlr4)
+
 add_library (frontend STATIC ${FRONTEND_SOURCES})
 target_link_libraries (frontend
   PRIVATE absl::strings
   # These libraries are exposed by a header.
-  PUBLIC frontend-parser-gen
+  PUBLIC ir
+  PUBLIC p4ctoolkit
+  PUBLIC frontend-antlr4
   PUBLIC absl::flat_hash_set
   PUBLIC absl::flat_hash_map
 )

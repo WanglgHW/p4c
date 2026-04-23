@@ -753,8 +753,6 @@ class RunBMV2(object):
                     "--log-flush",
                     "--use-files",
                     str(wait),
-                    "--dump-packet-data",
-                    str(10240),
                     "--thrift-port",
                     thriftPort,
                     "--device-id",
