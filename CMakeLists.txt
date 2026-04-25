@@ -531,10 +531,24 @@ endif ()
 ####################################### IR Generation Begin #######################################
 
 # IR source files are pre-generated and stored in the source tree under ir/.
-# No runtime generation step is required.
+# No runtime generation step is required. The IR was hand-split from the
+# original monolithic ir-generated.{h,cpp} into per-category files; the
+# umbrella headers/cpp re-export them for backwards compatibility.
 set (IR_GENERATED_SRCS
   ${P4C_SOURCE_DIR}/ir/ir-generated.h
   ${P4C_SOURCE_DIR}/ir/ir-generated.cpp
+  ${P4C_SOURCE_DIR}/ir/ir-generated-base.h
+  ${P4C_SOURCE_DIR}/ir/ir-generated-base.cpp
+  ${P4C_SOURCE_DIR}/ir/ir-generated-types.h
+  ${P4C_SOURCE_DIR}/ir/ir-generated-types.cpp
+  ${P4C_SOURCE_DIR}/ir/ir-generated-expressions.h
+  ${P4C_SOURCE_DIR}/ir/ir-generated-expressions.cpp
+  ${P4C_SOURCE_DIR}/ir/ir-generated-statements.h
+  ${P4C_SOURCE_DIR}/ir/ir-generated-statements.cpp
+  ${P4C_SOURCE_DIR}/ir/ir-generated-declarations.h
+  ${P4C_SOURCE_DIR}/ir/ir-generated-declarations.cpp
+  ${P4C_SOURCE_DIR}/ir/ir-generated-v1.h
+  ${P4C_SOURCE_DIR}/ir/ir-generated-v1.cpp
   ${P4C_SOURCE_DIR}/ir/gen-tree-macro.h)
 
 add_library(ir-generated OBJECT ${IR_GENERATED_SRCS} ${EXTENSION_IR_SOURCES})

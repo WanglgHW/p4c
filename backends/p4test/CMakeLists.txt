@@ -74,18 +74,11 @@ set (P4TEST_SUITES
 # would not make sense to run all the tests twice (one with and one without
 # P4Runtime).
 set (P4RUNTIME_EXCLUDE
-  # error not supported in static entries, not strictly required for P4Info
-  # generation though
-  testdata/p4_16_samples/issue1062-bmv2.p4
   # P4Info generation fails (as expected with the current P4Runtime spec) with:
   # Unsupported type parameter for Value Set; this version of P4Runtime requires
   # that when the type parameter of a Value Set is a struct, all the fields of
   # the struct must be of type bit<W>, but inner is not
   testdata/p4_16_samples/pvs-nested-struct.p4
-  # The tests below use type `error` for table key which P4Runtime 1.x
-  # does not support.
-  # table t_exact key named m.my_err is type error
-  testdata/p4_16_samples/issue1062-1-bmv2.p4
   # table t key named meta.err is type error
   testdata/p4_16_samples/issue1304.p4
   # table parser_error_count_and_convert key named istd.parser_error

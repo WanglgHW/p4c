@@ -1,3 +1,0 @@
-psa-switch-expression-without-default.p4(126): [--Wwarn=missing] warning: SwitchCase: fallthrough with no statement
-            92:
-            ^^
