@@ -19,6 +19,8 @@ unified-compilation.am
 *.json.p4
 *p4.json
 build/
+build-bmv2/
+analysis-docs/
 *.pyc
 # testing may generate packet observation logs
 *.obs

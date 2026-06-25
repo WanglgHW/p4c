@@ -516,6 +516,35 @@ BFN_Options::BFN_Options() {
         "real allocation after)",
         OptionFlags::Hide);
     registerOption(
+        "--use-ralloc", nullptr,
+        [this](const char *) {
+            use_ralloc = true;
+            return true;
+        },
+        "Experimental: use the MILP/SCIP resource allocator for MAU table placement "
+        "(falls back to the legacy allocator on any failure). See model/doc.",
+        OptionFlags::Hide);
+    registerOption(
+        "--ralloc-emit", "dir",
+        [this](const char *arg) {
+            use_ralloc = true;
+            ralloc_emit_dir = arg;
+            return true;
+        },
+        "Experimental: at the table-placement seam, write <dir>/model_input.json and "
+        "<dir>/ir_middle.json for the standalone ralloc-solve, then stop the compile.",
+        OptionFlags::Hide);
+    registerOption(
+        "--ralloc-resume", "dir",
+        [this](const char *arg) {
+            use_ralloc = true;
+            ralloc_resume_dir = arg;
+            return true;
+        },
+        "Experimental: resume a decoupled ralloc compile, consuming <dir>/model_out.json "
+        "and <dir>/ir_middle.json at the table-placement seam (advisory).",
+        OptionFlags::Hide);
+    registerOption(
         "--alt-phv-alloc-meta-init", nullptr,
         [this](const char *) {
             alt_phv_alloc_meta_init = true;

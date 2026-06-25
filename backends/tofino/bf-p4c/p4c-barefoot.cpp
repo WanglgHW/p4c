@@ -112,6 +112,9 @@
 #include "backends/tofino/bf-p4c/midend/type_checker.h"
 #include "backends/tofino/bf-p4c/parde/parser_header_sequences.h"
 #include "backends/tofino/bf-p4c/specs/device.h"
+#if defined(BFP4C_HAVE_RALLOC)
+#include "ralloc/ralloc_model_pass.h"  // BFN::RallocEmitDone (--ralloc-emit early exit)
+#endif
 #include "frontends/common/constantFolding.h"
 #include "frontends/p4-14/header_type.h"
 #include "frontends/p4-14/typecheck.h"
@@ -330,7 +333,7 @@ void execute_backend(const IR::BFN::Pipe *maupipe, BFN_Options &options) {
         failure_guard(BFN::Backend &backend, const IR::BFN::Pipe *maupipe)
             : backend(backend), maupipe(maupipe) {}
         ~failure_guard() {
-            if (std::uncaught_exception()) {
+            if (std::uncaught_exceptions() > 0) {
                 for (int pipe_id : maupipe->ids) {
                     GenerateOutputs as(backend, backend.get_options(), pipe_id,
                                        backend.get_prim_json(), backend.get_json_graph(), false);
@@ -345,7 +348,20 @@ void execute_backend(const IR::BFN::Pipe *maupipe, BFN_Options &options) {
     };
     failure_guard guard(backend, maupipe);
 #endif  // BFP4C_CATCH_EXCEPTIONS
+#if defined(BFP4C_HAVE_RALLOC)
+    try {
+        maupipe = maupipe->apply(backend);
+    } catch (const BFN::RallocEmitDone &done) {
+        // --ralloc-emit wrote model_input.json + ir_middle.json and stopped the
+        // compile before solving; the standalone ralloc-solve runs next. This is a
+        // successful early exit, not a failure.
+        if (Log::verbose())
+            std::cout << "ralloc: emitted model inputs to " << done.dir << "; stopping" << std::endl;
+        return;
+    }
+#else
     maupipe = maupipe->apply(backend);
+#endif
     bool mau_success = maupipe != nullptr;
     bool comp_success = (::errorCount() > 0) ? false : true;
     if (maupipe) {

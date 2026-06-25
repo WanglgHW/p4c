@@ -547,7 +547,58 @@ target_include_directories(
   # FIXME: This should be pulled with FetchContent.
   PRIVATE "${BFN_P4C_SOURCE_DIR}/third_party/spdlog/include"
 )
+# The P4-16 parser is now ANTLR4-based; bf-p4c sources that read annotation
+# tokens (e.g. phv_analysis.cpp) include the generated P4Lexer.h, which pulls in
+# antlr4-runtime.h. Expose the ANTLR4 runtime include dirs to the backend.
+target_include_directories(tofinobackend PRIVATE
+  $<TARGET_PROPERTY:antlr4_static,INTERFACE_INCLUDE_DIRECTORIES>)
 add_dependencies(tofinobackend frontend genLogging bfn_p4runtime)
+
+# ---------------------------------------------------------------------------
+# ralloc: experimental MILP/SCIP resource allocator (model/). Built as a
+# separate library that inherits tofinobackend's include environment (so the
+# bridge can see bf-p4c + generated IR headers) and is linked back into the
+# backend. Enabled at runtime by --use-ralloc; a no-op otherwise. See model/doc.
+# ---------------------------------------------------------------------------
+set(RALLOC_DIR ${CMAKE_SOURCE_DIR}/model)
+if(EXISTS ${RALLOC_DIR}/include/ralloc/ralloc_model_pass.h)
+  find_package(SCIP CONFIG QUIET)
+  if(SCIP_FOUND)
+    message(STATUS "ralloc: SCIP found — MILP solving enabled")
+  else()
+    message(STATUS "ralloc: SCIP not found — .lp export only (legacy fallback)")
+  endif()
+  add_library(ralloc_bridge STATIC
+    ${RALLOC_DIR}/src/model/device_spec.cpp
+    ${RALLOC_DIR}/src/model/phv_model.cpp
+    ${RALLOC_DIR}/src/model/mau_model.cpp
+    ${RALLOC_DIR}/src/model/vliw_model.cpp
+    ${RALLOC_DIR}/src/model/resource_model.cpp
+    ${RALLOC_DIR}/src/model/model_json.cpp
+    ${RALLOC_DIR}/src/solver/linear_model.cpp
+    ${RALLOC_DIR}/src/solver/scip_solver.cpp
+    ${RALLOC_DIR}/src/bridge/compiler_bridge.cpp
+    ${RALLOC_DIR}/src/bridge/spec_check.cpp
+    ${RALLOC_DIR}/src/bridge/ralloc_model_pass.cpp
+  )
+  target_include_directories(ralloc_bridge PUBLIC ${RALLOC_DIR}/include)
+  # Inherit the backend's include dirs (bf-p4c sources + generated IR headers).
+  target_include_directories(ralloc_bridge PRIVATE
+    $<TARGET_PROPERTY:tofinobackend,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(ralloc_bridge PRIVATE
+    RALLOC_WITH_BFP4C=1
+    RALLOC_HAVE_SCIP=$<BOOL:${SCIP_FOUND}>)
+  if(SCIP_FOUND)
+    target_link_libraries(ralloc_bridge PUBLIC ${SCIP_LIBRARIES})
+    target_include_directories(ralloc_bridge PRIVATE ${SCIP_INCLUDE_DIRS})
+  endif()
+  # Generated IR headers must exist before the bridge compiles.
+  add_dependencies(ralloc_bridge ir frontend genLogging bfn_p4runtime)
+  # Let backend.cpp #include "ralloc/ralloc_model_pass.h" and link the symbols.
+  target_include_directories(tofinobackend PRIVATE ${RALLOC_DIR}/include)
+  target_link_libraries(tofinobackend PUBLIC ralloc_bridge)
+  target_compile_definitions(tofinobackend PRIVATE BFP4C_HAVE_RALLOC=1)
+endif()
 
 if(BUILD_STATIC_BFP4C_LIBS)
   add_library(bfp4c STATIC ${P4C_BAREFOOT_SRCS})
@@ -608,7 +659,18 @@ else()
     )
 endif()
 
-
+# Link the ralloc MILP allocator into the executable. Object libraries do not
+# propagate transitive link deps, so libralloc_bridge.a (whose RallocModelPass is
+# referenced from backend.cpp) must be brought in explicitly here. It transitively
+# pulls SCIP via its PUBLIC link.
+if(TARGET ralloc_bridge)
+  target_link_libraries(p4c-barefoot ralloc_bridge)
+  # p4c-barefoot.cpp is its own translation unit (not part of tofinobackend), so it
+  # needs the ralloc include dir + BFP4C_HAVE_RALLOC to compile the --ralloc-emit
+  # early-exit catch (BFN::RallocEmitDone).
+  target_include_directories(p4c-barefoot PRIVATE ${RALLOC_DIR}/include)
+  target_compile_definitions(p4c-barefoot PRIVATE BFP4C_HAVE_RALLOC=1)
+endif()
 
 install (TARGETS p4c-barefoot
   RUNTIME DESTINATION ${P4C_RUNTIME_OUTPUT_DIRECTORY})

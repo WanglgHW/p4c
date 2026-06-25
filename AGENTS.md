@@ -16,10 +16,12 @@ Two-level map of the repository (major folders only):
 |-- extensions/            # Extensions.
 |-- frontends/             # Frontend stages.
 |   |-- {common,p4,p4-14,parsers}/ # Frontend layers.
-|-- ir/                    # IR definitions.
+|-- ir/                    # IR definitions (.def files + hand-written nodes).
+|   |-- static-ir/         # Pre-generated static IR (used when ENABLE_TOFINO=OFF).
 |-- json_outputs/          # JSON output helpers.
 |-- lib/                   # Shared libraries.
 |-- midend/                # Midend passes.
+|-- model/                 # MILP/SCIP MAU resource allocator (ralloc, --use-ralloc).
 |-- p4include/             # P4 headers.
 |-- test/                  # Unit tests.
 |-- testdata/              # Test inputs/outputs.
@@ -37,6 +39,28 @@ Two-level map of the repository (major folders only):
 
 Optional tools:
 - `cmake --build build --target clang-format cpplint black isort`: format/lint checks (`*-fix-errors` to fix).
+
+## IR Generation Strategy (two modes, picked by `ENABLE_TOFINO`)
+The `ir-generated` translation unit (the `IR::*` node classes) is produced one of
+two ways, selected automatically in the top-level `CMakeLists.txt`:
+
+- **`ENABLE_TOFINO=ON` → build-time generation.** The `tools/ir-generator`
+  `irgenerator` tool parses every collected `.def` file (core IR **plus** the
+  Tofino `.def` extensions under `backends/tofino/bf-p4c/ir/`) and emits
+  `ir-generated.{h,cpp}` + `gen-tree-macro.h` into `${P4C_BINARY_DIR}/ir/` via the
+  `genIR` target. This is **required** for Tofino — its `IR::BFN::*` / `IR::MAU::*`
+  node classes exist only in those `.def` files and cannot be pre-generated.
+- **`ENABLE_TOFINO=OFF` (bmv2 and the other open-source backends) → static IR.**
+  The pre-generated, hand-split files in **`ir/static-ir/`** (core/frontend nodes
+  only) are staged into `${P4C_BINARY_DIR}/ir/` at configure time and compiled
+  directly. No `irgenerator` is built — these backends do not need the flex/bison
+  IR-generator step, and their IR is identical to what they always built against.
+
+Either way the sources land under `${P4C_BINARY_DIR}/ir/`, so `#include
+"ir/ir-generated.h"` resolves identically regardless of mode. If you change an IR
+`.def` file, the static copies in `ir/static-ir/` must be regenerated to match
+(build once with `ENABLE_TOFINO=ON` and copy `build/ir/ir-generated*` across, or
+keep `.def` edits Tofino-only).
 
 ## Coding Style & Naming Conventions
 - Follow the P4 coding standard philosophy and `.clang-tidy`.

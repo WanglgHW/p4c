@@ -21,6 +21,7 @@
 
 #include <stdlib.h>
 
+#include <algorithm>
 #include <stdexcept>
 #include <tuple>
 #include <utility>

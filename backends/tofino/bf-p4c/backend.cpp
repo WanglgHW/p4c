@@ -94,6 +94,9 @@
 #include "backends/tofino/bf-p4c/mau/jbay_next_table.h"
 #include "backends/tofino/bf-p4c/mau/mau_alloc.h"
 #include "backends/tofino/bf-p4c/mau/push_pop.h"
+#if defined(BFP4C_HAVE_RALLOC)
+#include "ralloc/ralloc_model_pass.h"  // BFN::RallocModelPass (libralloc_bridge)
+#endif
 #include "backends/tofino/bf-p4c/mau/selector_update.h"
 #include "backends/tofino/bf-p4c/mau/stateful_alu.h"
 #include "backends/tofino/bf-p4c/mau/table_summary.h"
@@ -444,7 +447,17 @@ Backend::Backend(const BFN_Options &o, int pipe_id)
         // is per P4 actions. This should also happen before table placement which may cause
         // tables to be split across stages.
         new GeneratePrimitiveInfo(phv, primNode),
+        // Table placement: the experimental MILP allocator (gated by --use-ralloc)
+        // wraps the legacy &table_alloc and transparently falls back to it on any
+        // failure, so behavior is unchanged when the flag is off.
+#if defined(BFP4C_HAVE_RALLOC)
+        options.use_ralloc
+            ? static_cast<Visitor *>(new BFN::RallocModelPass(options, phv, deps, defuse, clot,
+                                                              mutex, &table_alloc))
+            : static_cast<Visitor *>(&table_alloc),
+#else
         &table_alloc,
+#endif
         new P4::DumpPipe("After TableAlloc"),
         &table_summary,
         // Rerun defuse analysis here so that table placements are used to correctly calculate live

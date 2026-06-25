@@ -535,6 +535,33 @@ your own Bazel project. You may use it as a template to get you started.
 
 The build system is based on cmake.  This section describes how it can be customized.
 
+### IR generation strategy
+
+The IR node classes (the `ir-generated` translation unit) are produced one of two
+ways, chosen automatically by whether the Tofino backend is enabled:
+
+* **`ENABLE_TOFINO=ON` — build-time generation.** `tools/ir-generator` parses all
+  collected `.def` files, *including* the Tofino IR extensions in
+  `backends/tofino/bf-p4c/ir/`, and generates `ir-generated.{h,cpp}` +
+  `gen-tree-macro.h` into the build tree (the `genIR` target). The Tofino backend
+  **requires** this, because its `IR::BFN::*` / `IR::MAU::*` node classes are
+  defined only in those `.def` files.
+
+* **`ENABLE_TOFINO=OFF` — static pre-generated IR.** The bmv2 backend and the
+  other open-source backends build against the pre-generated, hand-split IR
+  checked in under [`ir/static-ir/`](ir/static-ir) (core/frontend node classes
+  only). These files are staged into the build tree at configure time and compiled
+  directly, so no `irgenerator` (and no flex/bison IR-generator step) is built.
+
+Both modes place the sources under `${build}/ir/`, so `#include
+"ir/ir-generated.h"` resolves the same way regardless of mode. After editing any
+IR `.def` file, regenerate the `ir/static-ir/` copies so the static (non-Tofino)
+build stays in sync.
+
+> The Tofino backend also ships an experimental MILP/SCIP MAU resource allocator
+> under [`model/`](model) (enabled with `--use-ralloc`); see `model/doc/` and
+> `backends/tofino/bf-p4c/AGENTS.md`.
+
 ### Defining new CMake targets
 
 When building a new backend target, add it into the development tree in the

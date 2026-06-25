@@ -409,6 +409,13 @@ set (IR_DEF_FILES)           # list to collect all .def files
 # Other configuration files that need to be generated
 configure_file ("${P4C_SOURCE_DIR}/cmake/config.h.cmake" "${P4C_BINARY_DIR}/config.h")
 
+# IR_GENERATOR_DIRECTORY is used to set the RUNTIME_OUTPUT_DIRECTORY property
+# of the irgenerator target to the matching path. Build-time IR generation is
+# re-enabled so that backend IR extensions (e.g. the Tofino .def files) are
+# compiled into the shared ir-generated translation unit.
+set (IR_GENERATOR_DIRECTORY ${P4C_BINARY_DIR}/tools/ir-generator)
+set (IR_GENERATOR ${IR_GENERATOR_DIRECTORY}/irgenerator)
+
 # Component libraries: must be defined before being used in the back end executables.
 set (P4C_LIBRARIES midend frontend ir p4ctoolkit ir-generated)
 if (ENABLE_CONTROL_PLANE)
@@ -418,6 +425,12 @@ endif()
 # The order of adding subdirectories matters because of target dependencies.
 add_subdirectory (tools/driver)
 add_subdirectory (lib)
+# The irgenerator tool produces ir-generated.{h,cpp} from the .def files at build
+# time. It is only needed for the build-time IR strategy (ENABLE_TOFINO); the
+# static-IR strategy used by bmv2 etc. ships pre-generated files and skips it.
+if (ENABLE_TOFINO)
+  add_subdirectory (tools/ir-generator)
+endif ()
 add_subdirectory (ir)
 
 
@@ -529,30 +542,84 @@ if (ENABLE_GTESTS)
 endif ()
 
 ####################################### IR Generation Begin #######################################
+#
+# There are two IR strategies, selected by whether the Tofino backend is built:
+#
+#  * ENABLE_TOFINO=ON  -> build-time generation. The ir-generator parses every
+#    collected .def file (core IR + the Tofino .def extensions) and emits
+#    ir-generated.{h,cpp} + gen-tree-macro.h into ${P4C_BINARY_DIR}/ir/. This is
+#    REQUIRED for the Tofino backend, whose IR::BFN::* / IR::MAU::* node classes
+#    are defined only in those .def files and so cannot be pre-generated.
+#
+#  * ENABLE_TOFINO=OFF -> the original pre-generated *static* IR shipped in
+#    ir/static-ir/ (core/frontend node classes only, hand-split into per-category
+#    files) is used directly, with no ir-generator run. This is what bmv2 and the
+#    other open-source backends build against; it keeps their build free of the
+#    flex/bison ir-generator step.
+#
+# In both cases the sources end up under ${P4C_BINARY_DIR}/ir/, so the usual
+# `#include "ir/ir-generated.h"` resolves identically regardless of strategy.
+#
+if (ENABLE_TOFINO)
+  # ----------------------- build-time generated IR (Tofino) -----------------------
+  set (IR_GENERATED_SRCS
+    ${P4C_BINARY_DIR}/ir/ir-generated.h
+    ${P4C_BINARY_DIR}/ir/ir-generated.cpp
+    ${P4C_BINARY_DIR}/ir/gen-tree-macro.h)
+  set_source_files_properties(${IR_GENERATED_SRCS} PROPERTIES GENERATED TRUE)
 
-# IR source files are pre-generated and stored in the source tree under ir/.
-# No runtime generation step is required. The IR was hand-split from the
-# original monolithic ir-generated.{h,cpp} into per-category files; the
-# umbrella headers/cpp re-export them for backwards compatibility.
-set (IR_GENERATED_SRCS
-  ${P4C_SOURCE_DIR}/ir/ir-generated.h
-  ${P4C_SOURCE_DIR}/ir/ir-generated.cpp
-  ${P4C_SOURCE_DIR}/ir/ir-generated-base.h
-  ${P4C_SOURCE_DIR}/ir/ir-generated-base.cpp
-  ${P4C_SOURCE_DIR}/ir/ir-generated-types.h
-  ${P4C_SOURCE_DIR}/ir/ir-generated-types.cpp
-  ${P4C_SOURCE_DIR}/ir/ir-generated-expressions.h
-  ${P4C_SOURCE_DIR}/ir/ir-generated-expressions.cpp
-  ${P4C_SOURCE_DIR}/ir/ir-generated-statements.h
-  ${P4C_SOURCE_DIR}/ir/ir-generated-statements.cpp
-  ${P4C_SOURCE_DIR}/ir/ir-generated-declarations.h
-  ${P4C_SOURCE_DIR}/ir/ir-generated-declarations.cpp
-  ${P4C_SOURCE_DIR}/ir/ir-generated-v1.h
-  ${P4C_SOURCE_DIR}/ir/ir-generated-v1.cpp
-  ${P4C_SOURCE_DIR}/ir/gen-tree-macro.h)
+  # Fixup #line directives in the generated IR files.
+  # We generate these files to a temporary location and update the build files
+  # only if they have changed. This avoids rebuilding the whole tree when small
+  # changes to the .def files affect only the .cpp file and not the headers.
+  set (fixup_file "${P4C_BINARY_DIR}/irgen-fixup.awk")
+  file(WRITE "${fixup_file}" "/^#\$/ { printf \"#line %d \\\"${P4C_BINARY_DIR}/ir/%s\\\"\\n\", NR+1, name; next; } 1\n")
+  set(temp_ir_genfiles
+    ir/ir-generated.cpp.tmp ir/ir-generated.cpp.fixup
+    ir/ir-generated.h.tmp   ir/ir-generated.h.fixup
+    ir/gen-tree-macro.h.tmp ir/gen-tree-macro.h.fixup
+  )
 
-add_library(ir-generated OBJECT ${IR_GENERATED_SRCS} ${EXTENSION_IR_SOURCES})
-add_dependencies(ir-generated ir)
+  add_custom_command (OUTPUT ${IR_GENERATED_SRCS}
+    COMMAND ${IR_GENERATOR} -i ir/ir-generated.cpp.tmp -o ir/ir-generated.h.tmp -t ir/gen-tree-macro.h.tmp ${IR_DEF_FILES}
+    COMMAND awk -v name=ir-generated.cpp -f ${fixup_file} ir/ir-generated.cpp.tmp > ir/ir-generated.cpp.fixup
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ir/ir-generated.cpp.fixup ir/ir-generated.cpp
+    COMMAND awk -v name=ir-generated.h   -f ${fixup_file} ir/ir-generated.h.tmp > ir/ir-generated.h.fixup
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ir/ir-generated.h.fixup ir/ir-generated.h
+    COMMAND awk -v name=gen-tree-macro.h -f ${fixup_file} ir/gen-tree-macro.h.tmp > ir/gen-tree-macro.h.fixup
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ir/gen-tree-macro.h.fixup ir/gen-tree-macro.h
+    MAIN_DEPENDENCY ${IR_GENERATOR}
+    DEPENDS irgenerator ${IR_DEF_FILES}
+    COMMENT "Generating IR class files"
+  )
+
+  add_custom_target(genIR DEPENDS ${IR_GENERATED_SRCS})
+  set_source_files_properties(${IR_GENERATOR} PROPERTIES GENERATED TRUE)
+  add_library(ir-generated OBJECT ${IR_GENERATED_SRCS} ${EXTENSION_IR_SOURCES})
+  add_dependencies(ir-generated ir genIR)
+else()
+  # ----------------------- static pre-generated IR (bmv2 etc.) -----------------------
+  # Stage the hand-split static IR from ir/static-ir/ into ${P4C_BINARY_DIR}/ir/
+  # at configure time so that the usual `#include "ir/ir-generated.h"` resolves to
+  # it, exactly as it would for the generated variant. No ir-generator is built.
+  set (IR_STATIC_DIR ${P4C_SOURCE_DIR}/ir/static-ir)
+  set (IR_STATIC_FILES
+    ir-generated.h               ir-generated.cpp
+    ir-generated-base.h          ir-generated-base.cpp
+    ir-generated-types.h         ir-generated-types.cpp
+    ir-generated-expressions.h   ir-generated-expressions.cpp
+    ir-generated-statements.h    ir-generated-statements.cpp
+    ir-generated-declarations.h  ir-generated-declarations.cpp
+    ir-generated-v1.h            ir-generated-v1.cpp
+    gen-tree-macro.h)
+  set (IR_GENERATED_SRCS)
+  foreach (f ${IR_STATIC_FILES})
+    configure_file(${IR_STATIC_DIR}/${f} ${P4C_BINARY_DIR}/ir/${f} COPYONLY)
+    list (APPEND IR_GENERATED_SRCS ${P4C_BINARY_DIR}/ir/${f})
+  endforeach()
+  add_library(ir-generated OBJECT ${IR_GENERATED_SRCS} ${EXTENSION_IR_SOURCES})
+  add_dependencies(ir-generated ir)
+endif()
 target_link_libraries(ir-generated PUBLIC ir ${P4C_LIB_DEPS} ${EXTENSION_IR_LIBS})
 
 ######################################## IR Generation End ########################################

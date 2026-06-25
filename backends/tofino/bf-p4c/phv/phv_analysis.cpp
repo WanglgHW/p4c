@@ -38,7 +38,7 @@
 #include "backends/tofino/bf-p4c/phv/table_phv_constraints.h"
 #include "backends/tofino/bf-p4c/phv/v2/phv_allocation_v2.h"
 #include "backends/tofino/bf-p4c/phv/validate_allocation.h"
-#include "frontends/parsers/p4/p4parser.hpp"
+#include "frontends/p4-antlr4/P4Lexer.h"
 #include "ir/visitor.h"
 
 class PhvInfo;
@@ -62,7 +62,7 @@ void applyGlobalPragmas(const PhvSpec &phvspec,
         for (auto *tok : annot->getUnparsed()) {
             PHV::Container c(tok->text.c_str(), false);
             if (startRange) {
-                if (tok->token_type == P4::P4Parser::token_type::TOK_INTEGER)
+                if (tok->token_type == ::P4Lexer::INTEGER)
                     c = PHV::Container(startRange.type(), atoi(tok->text.c_str()));
                 if (!c || c.type() != startRange.type() || startRange.index() > c.index()) {
                     error(ErrorType::ERR_INVALID, "invalid container range %2%-%3% in %1%", annot,

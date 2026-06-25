@@ -64,6 +64,18 @@ class BFN_Options : public CompilerOptions {
     bool alt_phv_alloc = false;
 #endif
     int traffic_limit = 100;
+    // Use the experimental MILP/SCIP resource allocator (ralloc) for MAU table
+    // placement instead of the legacy greedy allocator. Falls back to legacy on
+    // any failure. Off by default. See model/doc.
+    bool use_ralloc = false;
+    // Decoupled (out-of-process) ralloc flow. When --ralloc-emit <dir> is set, the
+    // backend ingests the IR at the table-placement seam, writes <dir>/model_input.json
+    // (the solver input) and <dir>/ir_middle.json (the id<->name resume bundle), then
+    // stops the compile. The standalone `ralloc-solve` then produces <dir>/model_out.json.
+    // With --ralloc-resume <dir>, the backend consumes model_out.json + ir_middle.json
+    // at the seam (advisory) instead of running SCIP in-process. See model/doc/06.
+    std::string ralloc_emit_dir;
+    std::string ralloc_resume_dir;
     int num_stages_override = 0;
     bool enable_event_logger = false;
     bool disable_parse_min_depth_limit = false;
