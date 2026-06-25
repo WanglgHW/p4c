@@ -199,11 +199,16 @@ auto runFragment(const P4::Util::SourceInfo &srcInfo,
 
     // The reconstructed text has no relationship to the original file
     // positions, so build a fresh, throwaway InputSources for the fragment.
-    // The outer annotation's `srcInfo` is already the fallback used for
-    // diagnostics emitted against this fragment.
     auto *fragmentSources = new P4::Util::InputSources();
     SourceInfoFactory factory(fragmentSources);
     P4IRConstructor visitor(factory, fragmentSources);
+    // Anchor every node produced from the fragment at the annotation's original
+    // source position. Beyond giving sensible diagnostics, this is required for
+    // correctness: ResolveReferences enforces declaration-before-use ordering by
+    // comparing source positions, so nodes left at the throwaway line 1 would
+    // make in-scope declarations appear to come "after" their use and be
+    // filtered out (e.g. the method names in `@synchronous(...)`).
+    visitor.setSrcInfoOverride(srcInfo);
     return visit(&visitor, ctx);
 }
 

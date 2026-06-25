@@ -36,15 +36,18 @@ P4IRConstructor::P4IRConstructor(const SourceInfoFactory &sourceInfoFactory,
 //===----------------------------------------------------------------------===//
 
 P4::Util::SourceInfo P4IRConstructor::srcInfo(antlr4::ParserRuleContext *ctx) const {
+    if (srcInfoOverride.isValid()) return srcInfoOverride;
     return sourceInfoFactory.toSourceInfo(ctx);
 }
 
 P4::Util::SourceInfo P4IRConstructor::srcInfo(antlr4::Token *token) const {
+    if (srcInfoOverride.isValid()) return srcInfoOverride;
     return sourceInfoFactory.toSourceInfo(token);
 }
 
 P4::Util::SourceInfo P4IRConstructor::srcInfo(antlr4::Token *start,
                                               antlr4::Token *stop) const {
+    if (srcInfoOverride.isValid()) return srcInfoOverride;
     return sourceInfoFactory.toSourceInfo(start, stop);
 }
 

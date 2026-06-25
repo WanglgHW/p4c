@@ -34,6 +34,19 @@ class P4IRConstructor {
     P4IRConstructor(const SourceInfoFactory &sourceInfoFactory,
                     P4::Util::InputSources *sources);
 
+    /// Force every node built by this constructor to carry @p si as its source
+    /// position, ignoring the per-token positions derived from the input stream.
+    ///
+    /// Used when re-parsing an annotation body (see Antlr4ParserDriver's
+    /// `runFragment`): the fragment is lexed from reconstructed text whose
+    /// positions bear no relation to the original file, so without an override
+    /// the nodes land at line 1. That breaks `ResolveReferences`, which uses
+    /// source positions to enforce declaration-before-use ordering and would
+    /// otherwise filter out in-scope declarations (e.g. the method names in a
+    /// `@synchronous(...)` annotation). Setting the override to the annotation's
+    /// real position restores the original Bison-frontend behaviour.
+    void setSrcInfoOverride(const P4::Util::SourceInfo &si) { srcInfoOverride = si; }
+
     /// Entry point: visit program and return IR::P4Program.
     const P4::IR::P4Program *visitProgram(Antlr4P4Parser::ProgramContext *ctx);
 
@@ -318,6 +331,10 @@ class P4IRConstructor {
     SourceInfoFactory sourceInfoFactory;
     P4::Util::InputSources *sources;
     P4::Util::ProgramStructure *structure;
+
+    /// When valid, overrides the source position of every constructed node.
+    /// See setSrcInfoOverride().
+    P4::Util::SourceInfo srcInfoOverride;
 
     /// All error declarations are merged
     P4::IR::Type_Error *allErrors = nullptr;
