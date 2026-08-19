@@ -27,15 +27,49 @@ captures the big picture and the fork-specific pieces that span multiple dirs.
 - **DSLX backend (`backends/dslx-translator/`).** Translates P4 (post-midend) to
   Google XLS DSLX. Entry point `run_dslx_backend(...)` in `dslxBackend.{h,cpp}`;
   standalone driver `p4c-dslx.cpp`; `verify_dslx.py` validates output. Targets
-  TNA/T2NA. Used both standalone and wired into the Tofino backend.
+  TNA/T2NA. Used both standalone and wired into the Tofino backend. Built by
+  default (`ENABLE_DSLX=ON`); produces the `dslx-translator` lib + `p4c-dslx`
+  binary.
 
 - **Tofino backend (`backends/tofino/bf-p4c/`).** Barefoot/Tofino target
   (`IR::BFN::*` / `IR::MAU::*` nodes). See its `AGENTS.md`.
 
-- **MILP/SCIP MAU resource allocator (`model/`, `--use-ralloc`).** Experimental
-  table-placement allocator. In the Tofino backend, `--use-ralloc` (see
+- **MILP/OR-Tools MAU resource allocator (`model/`, `--use-ralloc`).** Experimental
+  table-placement allocator solved with Google OR-Tools (CP-SAT for the all-discrete
+  ralloc models, MPSolver for mixed ones). In the Tofino backend, `--use-ralloc` (see
   `backends/tofino/bf-p4c/bf-p4c-options.cpp`, `backend.cpp:~450`) swaps the
   classic table placement for the MILP allocator. `model/run_ralloc.py` drives it.
+  Requires `ENABLE_TOFINO=ON` and OR-Tools (`find_package(ortools CONFIG)`); without
+  OR-Tools it degrades to an `.lp`/MPS exporter. OR-Tools is **not** linked into
+  `p4c-barefoot` by default (its own abseil/protobuf/re2 collide with p4c's), so
+  solving normally happens out of process in `ralloc-solve` via the decoupled flow
+  (`--ralloc-emit` → `ralloc-solve` → `--ralloc-resume`); in-process solving is
+  opt-in with `-DP4C_USE_PREINSTALLED_ABSEIL=ON -DRALLOC_INPROCESS_SOLVER=ON`.
+  It is a **strictly optional optimizer** that falls back to the legacy allocator on
+  any infeasibility/timeout/error, and today runs in *advisory mode* (solves + logs
+  the optimal placement; legacy still emits the binary, so it's a proven no-op on
+  output). Committing the MILP placement is gated behind the `RALLOC_COMMIT` compile
+  define. The allocator also builds fully standalone (no compiler):
+  `cmake -S model -B model/build [-DCMAKE_PREFIX_PATH=/opt/homebrew]`, then
+  `cmake --build model/build`, `cmake --build model/build --target ralloc_tests` and
+  `ctest --test-dir model/build`. Deep design docs in `model/doc/` and root
+  `AGENTS.md`.
+
+- **MiniZinc edition of the allocator (`model-minizinc/`).** A parallel copy of
+  `model/` whose only difference is the solver backend: the same solver-agnostic
+  `LinearModel` is serialized by `LinearModel::toMiniZincString` to a `.mzn` file
+  and handed to an external `minizinc` process with a CP-SAT FlatZinc backend
+  (`minizinc_solver.{h,cpp}` in place of `ortools_solver.{h,cpp}`). Consequently
+  it has **no build- or link-time solver dependency** — availability is a runtime
+  probe of the `minizinc` binary (`$RALLOC_MINIZINC`, solver tag
+  `$RALLOC_MINIZINC_SOLVER`, default `cp-sat`). It is **standalone only**: the
+  in-tree `ralloc_bridge` in `backends/tofino/bf-p4c/CMakeLists.txt` hardcodes
+  `${CMAKE_SOURCE_DIR}/model`, so `model-minizinc/` is never compiled into
+  `p4c-barefoot`. Build/test: `cmake -S model-minizinc -B model-minizinc/build &&
+  cmake --build model-minizinc/build && ctest --test-dir model-minizinc/build`.
+  Everything outside `src/solver/` is a near-duplicate of `model/` — **a change to
+  the shared model core, JSON seam, device spec, or docs usually has to be made in
+  both trees**.
 
 ## IR generation: two modes selected by `ENABLE_TOFINO`
 
@@ -64,6 +98,15 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release   # configure (add -DENABLE_TOFINO=ON 
 cmake --build build                          # compile
 cmake --build build --target check           # full test suite
 ```
+
+`ENABLE_TOFINO` and `ENABLE_DSLX` are dependent options gated on
+`ENABLE_CONTROL_PLANE` — with it off they are forced off regardless of what you
+pass. `ENABLE_TOFINO` defaults to OFF, `ENABLE_DSLX` to ON. Two
+build trees are already configured in the working copy — reuse them instead of
+reconfiguring: **`build/`** (Release, `ENABLE_TOFINO=ON` — Tofino, ralloc, and
+build-time IR generation) and **`build-bmv2/`** (Release, `ENABLE_TOFINO=OFF` —
+open-source backends on the static IR). A Tofino change must be checked in
+`build/`; an IR `.def` change must be checked in both.
 
 - **Single / filtered tests:** `ctest --test-dir build -jN --output-on-failure -R <regex>`
 - **Refresh expected outputs:** `P4TEST_REPLACE=1 cmake --build build --target check`

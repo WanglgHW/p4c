@@ -12,7 +12,7 @@
  *
  *     M1 PHV  ->  M2 MAU/memory  ->  M3 VLIW/action   (+ coupling cuts)
  *
- * solved with SCIP (Doc 05), and returns a `ModelResults` that the compiler
+ * solved with OR-Tools (Doc 05), and returns a `ModelResults` that the compiler
  * writes back into PhvInfo / TableResourceAlloc / InstructionMemory::Use via
  * the CompilerBridge (Doc 06 §4).
  *
@@ -48,7 +48,7 @@ enum class Objective {
     Lexicographic  ///< Feasibility > MinStages > MinPower > MinPhv (default)
 };
 
-enum class SolverChoice { Scip, LpExportOnly };
+enum class SolverChoice { OrTools, LpExportOnly };
 
 struct SolveOptions {
     double time_limit_s = 120.0;        ///< per sub-model wall-clock budget
@@ -56,11 +56,11 @@ struct SolveOptions {
     Objective objective = Objective::Lexicographic;
     bool fine_memory = false;           ///< solve exact RAM-cell placement in M2
     int max_coupling_iters = 8;         ///< C1/C5 Benders loop cap (Doc 05 §5)
-    bool warm_start = true;             ///< seed SCIP from legacy/heuristic
-    bool deterministic = true;          ///< fixed seed, single thread
+    bool warm_start = true;             ///< seed the solver from legacy/heuristic
+    bool deterministic = true;          ///< fixed seed, single worker
     unsigned seed = 1;
-    SolverChoice solver = SolverChoice::Scip;
-    std::string dump_dir;               ///< if non-empty, dump .lp/.cip + logs
+    SolverChoice solver = SolverChoice::OrTools;
+    std::string dump_dir;               ///< if non-empty, dump .lp/.pb.txt + logs
 };
 
 // ---------------------------------------------------------------------------
@@ -147,8 +147,8 @@ inline SolveResult solveResourceAllocation(const ModelInputs &in, SolveOptions o
     return ResourceModel(std::move(o)).solve(in);
 }
 
-/// Library/solver capability probe (Doc 05 §1). False if SCIP not linked.
-bool hasScip();
+/// Library/solver capability probe (Doc 05 §1). False if OR-Tools not linked.
+bool hasOrTools();
 
 /// Version string of the ralloc library.
 const char *version();

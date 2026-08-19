@@ -5,10 +5,11 @@
  * ralloc-solve — the standalone MILP solver process.
  *
  * Reads a model_input.json (ralloc::ModelInputs), solves M2 (MAU/memory) then
- * M3 (VLIW/action) with SCIP, and writes a model_out.json (ralloc::ModelResults)
- * for the compiler's resume phase. This is the ONLY process that links/runs SCIP,
- * so the solver no longer executes inside p4c-barefoot's GC-overridden allocator
- * (which made an in-process re-solve crash); see model/doc.
+ * M3 (VLIW/action) with OR-Tools, and writes a model_out.json
+ * (ralloc::ModelResults) for the compiler's resume phase. This is the ONLY
+ * process that links/runs OR-Tools, so the solver no longer executes inside
+ * p4c-barefoot's GC-overridden allocator (which made an in-process re-solve
+ * crash); see model/doc.
  *
  * Usage:
  *   ralloc-solve <model_input.json> -o <model_out.json>
@@ -98,8 +99,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (!ralloc::hasScip()) {
-        std::cerr << "ralloc-solve: SCIP not linked — cannot solve (build with SCIP)\n";
+    if (!ralloc::hasOrTools()) {
+        std::cerr << "ralloc-solve: OR-Tools not linked — cannot solve (build with OR-Tools)\n";
         return 1;
     }
 

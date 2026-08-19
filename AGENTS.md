@@ -21,7 +21,7 @@ Two-level map of the repository (major folders only):
 |-- json_outputs/          # JSON output helpers.
 |-- lib/                   # Shared libraries.
 |-- midend/                # Midend passes.
-|-- model/                 # MILP/SCIP MAU resource allocator (ralloc, --use-ralloc).
+|-- model/                 # MILP/OR-Tools resource allocator (ralloc, --use-ralloc) — see dedicated section.
 |-- p4include/             # P4 headers.
 |-- test/                  # Unit tests.
 |-- testdata/              # Test inputs/outputs.
@@ -61,6 +61,112 @@ Either way the sources land under `${P4C_BINARY_DIR}/ir/`, so `#include
 `.def` file, the static copies in `ir/static-ir/` must be regenerated to match
 (build once with `ENABLE_TOFINO=ON` and copy `build/ir/ir-generated*` across, or
 keep `.def` edits Tofino-only).
+
+## MILP/OR-Tools Resource Allocator — `model/` (`--use-ralloc`)
+The fork's headline feature. It replaces (augments) the Tofino backend's classic
+*greedy + backtracking + heuristic* physical-resource allocators with a single
+**Mixed-Integer Linear Program** solved to (near-)optimality by **Google OR-Tools
+(CP-SAT)**, then
+writes the result back so the rest of the pipeline (`bf-asm`) is unchanged. The
+legacy allocators are locally optimal at best, backtrack heavily, can fail on
+feasible programs, and optimize no global objective; the model captures the
+device constraints exactly and minimizes a real objective (stages, power, PHV
+pressure). Full design lives in `model/doc/00..08` + `model/doc/MANUAL.md`;
+`model/README.md` is the entry point.
+
+### The math model (Doc 03 — `model/doc/03_model_formulation.md`)
+Allocation is too large for one monolithic MILP, so it uses **staged
+decomposition** mirroring the hardware dependency order. Each `Mi` is a
+self-contained MILP linked by a few coupling parameters; the assignment cores are
+**Binary ILP** (assignment/packing/coloring are inherently 0/1, capacities and
+dependencies are linear ⇒ MILP, strictly stronger than pure CP for these
+knapsack/assignment structures):
+- **M0** — parameter ingestion (sets, costs) from the IR; not an optimization.
+- **M1 PHV** (Binary ILP) — field slice → PHV container. Vars `x[s,c]`, bit-offset
+  `p[s,c,o]`, container-used `u[c]`; constraints for assignment, kind/size
+  legality, overlay/no-overlap, pack conflict, alignment, crossbar-group locality;
+  objective minimizes containers used (+ tie-breaks). ~10⁴–10⁵ binaries.
+- **M2 MAU + memory** (MILP, the most important sub-model) — table → stage,
+  logical-id, layout option, SRAM/TCAM/mapRAM, input-crossbar bytes, hash, stats/
+  meter ALUs, gateways. Var `s[t,o,k]` (table `t`, layout option `o`, stage `k`)
+  with per-stage capacity rows (one per resource) and dependency/min-stage-gap
+  rows; objective `W_stage·Σ useStage + W_pow·power + W_bal·spread` (lexicographic
+  via `W_stage ≫ W_pow ≫ W_bal`). Demand vectors come from `StageUseEstimate`.
+- **M3 VLIW / action** (Binary ILP, solved **per (stage, gress)** ⇒ tiny) — action
+  → imem row+color, action-data-bus byte slots. Enforces the imem coloring rule
+  (ALU-overlapping actions can't share a row).
+- **M4** — write-back to bf-p4c data structures.
+
+Device-spec constants (NSTAGE=12, NSRAM=80, NTCAM=24, NLID=16, …) live in
+`include/ralloc/device_spec.h`, referenced symbolically so the model is
+device-portable. An optional **global fused** M1∪M2∪M3 model exists as a
+research/ground-truth mode (Doc 03 §9), not the default (size).
+
+### The solver strategy (Doc 05 — `model/doc/05_ortools_integration.md`)
+- **Solver-agnostic seam.** Builders emit an abstract `LinearModel` (vars, linear
+  rows, indicator rows, objective); `OrToolsBackend` translates it into an
+  OR-Tools **CP-SAT** model when every var is discrete and every row scales to
+  integer coefficients (true for M1/M2/M3), else into **MPSolver** (SCIP/CBC/HiGHS
+  MIP, big-M indicators). OR-Tools is **optional** (`find_package(ortools CONFIG)`):
+  without it the backend degrades to an `.lp`/MPS exporter and the in-compiler path
+  always falls back to legacy. `LinearModel`'s `.lp`/MPS export also enables
+  cross-validation against HiGHS/Gurobi/CPLEX and solver-less unit tests.
+- **Indicator rows are native** on the CP-SAT path (`Constraint::OnlyEnforceIf`),
+  so Doc 03 §8 needs no big-M tuning.
+- **Solve order:** M1 → M2 (coarse) → M3 per (k,r); exact RAM-cell placement is
+  delegated to the legacy `Memories::allocate_all` unless `--ralloc-fine-memory`.
+- **Anytime / time-boxed:** per-sub-model `max_time_in_seconds` +
+  `relative_gap_limit`; CP-SAT returns the best incumbent in budget. No
+  integer-feasible found ⇒ fall back.
+- **Warm-start** each sub-model with the legacy allocator's solution
+  (`CpModelBuilder::AddHint`) for a guaranteed incumbent and ~10× speedup.
+- **Logic-based Benders coupling cuts:** an M3 (k,r) infeasibility becomes a
+  no-good cut on M2 (those tables can't all share stage k); re-solve, capped at
+  `K=8` iterations, else fall back. Guarantees termination + correctness.
+- **Determinism:** `num_workers = 1` + fixed `random_seed` for byte-identical
+  output (the search log's `solution_fingerprint` makes drift visible);
+  `--ralloc-threads N` opts into parallel search at the cost of determinism.
+
+### Safety contract — it can never break a compilable program
+The model is a **strictly optional optimizer**. On any infeasibility, timeout,
+solver absence, self-check failure, or exception it falls back to the legacy
+allocator. `RallocModelPass` wraps the legacy `&table_alloc` and today runs in
+**advisory mode** (solves + logs the optimal placement, legacy emits the binary ⇒
+a proven no-op on output). Committing the MILP placement needs a detailed
+memory-realization step gated behind the `RALLOC_COMMIT` compile define
+(`model/src/bridge/ralloc_model_pass.cpp`). Verified end-to-end on
+`testdata/dpvs-l4LB/dpvs_l4lb.p4` (6 stages / 24 tables; resumed `.bfa`
+byte-identical to baseline modulo `run_id`).
+
+### Code layout & build
+- `model/include/ralloc/` — `resource_model.h` (facade), `device_spec.h`,
+  `linear_model.h`, `phv_model.h`/`mau_model.h`/`vliw_model.h` (M1/M2/M3 builders),
+  `ortools_solver.h` (`SolverBackend`/`OrToolsBackend`), `compiler_bridge.h`
+  (IR ingest + write-back + self-check), `ralloc_model_pass.h`, `model_json.h`.
+- `model/src/{model,solver,bridge,tool}/` — builders+facade / `LinearModel`+OR-Tools /
+  compiler glue+`RallocModelPass`+`spec_check` / `ralloc-solve` standalone driver.
+- **Standalone build (no compiler):** `cmake -S model -B model/build
+  [-DCMAKE_PREFIX_PATH=/opt/homebrew]` then `cmake --build model/build`;
+  `cmake --build model/build --target ralloc_tests` + `ctest --test-dir model/build`
+  runs `ralloc_unit` + `ralloc_solver_test` + `ralloc_json_test`.
+- **In-tree:** `backends/tofino/bf-p4c/CMakeLists.txt` builds a `ralloc_bridge`
+  static lib (`BFP4C_HAVE_RALLOC=1`), linked into `tofinobackend`. Needs
+  `ENABLE_TOFINO=ON`. OR-Tools is **not** linked into the compiler by default —
+  it ships its own abseil/protobuf/re2, which collide with p4c's FetchContent
+  copies — so in-process solving is opt-in via
+  `-DP4C_USE_PREINSTALLED_ABSEIL=ON -DRALLOC_INPROCESS_SOLVER=ON`; otherwise
+  `--use-ralloc` logs the reason and falls back, and real solves go through the
+  decoupled flow below. Wiring: `--use-ralloc` flag in `bf-p4c-options.{h,cpp}`;
+  the gated `&table_alloc` entry in `backend.cpp:~454` swaps in
+  `BFN::RallocModelPass`.
+
+### Decoupled (out-of-process) flow — Doc 08
+OR-Tools runs as a separate process from the compiler, handing off via JSON files
+(`--ralloc-emit dir` → `model_input.json` + `ir_middle.json` then stop; run
+`model/build/ralloc-solve model_input.json -o model_out.json`; `--ralloc-resume
+dir` consumes both and finishes). This keeps `ralloc-solve` independently
+buildable and sidesteps both the solver-under-p4c-GC re-entrancy hazard and the
+abseil/protobuf clash; it is the default route.
 
 ## Coding Style & Naming Conventions
 - Follow the P4 coding standard philosophy and `.clang-tidy`.

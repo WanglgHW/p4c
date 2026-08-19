@@ -185,7 +185,8 @@ min  W_stage · Σ_k useStage[k]            (O1 minimize stages = latency)
    + W_pow   · Σ_{t,o,k} pow(t,o)·s[t,o,k]   (O3 power)
    + W_bal   · (max-stage-pressure slack)     (O4 spread)
 ```
-`W_stage ≫ W_pow ≫ W_bal` for lexicographic behavior, or use SCIP Pareto (Doc 05).
+`W_stage ≫ W_pow ≫ W_bal` for lexicographic behavior, or the staged lexicographic
+solve loop (Doc 05 §4).
 
 ### 4.4 Constraints
 
@@ -345,9 +346,9 @@ NSTAGE=2. Variables `s[t1,o,k], s[t2,o,k]` for k∈{0,1}.
 ## 7. Why BILP / MILP (not LP, not CP-only)
 
 - Assignment, packing, coloring, and "uses a stage" are inherently **0/1** ⇒
-  Binary ILP. LP relaxation is used only internally by SCIP's branch-and-cut.
+  Binary ILP. LP relaxation is used only internally by the solver's search.
 - Capacities and dependencies are **linear** in those binaries ⇒ MILP, not a
-  general nonlinear/CP program. SCIP solves MILP with full LP-relaxation,
+  general nonlinear/CP program. CP-SAT solves it as an integer program,
   cutting planes, and presolve — strictly stronger than pure CP propagation for
   these knapsack/assignment structures.
 - The few genuinely combinatorial sub-structures (imem coloring, 2-D RAM
@@ -358,8 +359,8 @@ NSTAGE=2. Variables `s[t1,o,k], s[t2,o,k]` for k∈{0,1}.
 ## 8. Linearization & symmetry-breaking toolbox
 
 - **Indicator `𝟙[Σ a_i x_i ≥ b] = z`**: big-M `Σ a_i x_i ≥ b·z`,
-  `Σ a_i x_i ≤ b-1+M·z`. SCIP also supports native indicator constraints
-  (`SCIPcreateConsIndicator`) — preferred (no big-M tuning).
+  `Σ a_i x_i ≤ b-1+M·z`. CP-SAT enforces indicator rows natively
+  (`Constraint::OnlyEnforceIf`) — preferred (no big-M tuning).
 - **`firstStage`/`lastStage`** (24): introduce `fk[t,k]` with
   `Σ_k fk[t,k]=1`, `fk[t,k] ≤ Σ_{k'≤k} y[t,k']`, `Σ_k k·fk = firstStage`.
 - **Stage symmetry:** stages are *not* interchangeable (dependencies + earlier =
@@ -382,4 +383,4 @@ NSTAGE=2. Variables `s[t1,o,k], s[t2,o,k]` for k∈{0,1}.
 4. **Robust/parametric** allocation: leave PHV headroom to survive program edits.
 
 All formulas above are implemented by the builders in `model/src/model/*` against
-the parameter API of Doc 04 and emitted to SCIP via Doc 05.
+the parameter API of Doc 04 and emitted to OR-Tools via Doc 05.

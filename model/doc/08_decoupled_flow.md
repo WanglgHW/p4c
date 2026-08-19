@@ -1,20 +1,25 @@
 # Doc 08 — Decoupled (out-of-process) solver flow
 
 This document describes the **file-based, multi-phase** integration that runs the
-MILP/SCIP allocator as a **separate process** from `bf-p4c`, handing off through
+MILP/OR-Tools allocator as a **separate process** from `bf-p4c`, handing off through
 three JSON files. It complements the in-process integration of Doc 06 (which is
 retained for `--use-ralloc`).
 
 ## 1. Why decouple
 
-The original integration links SCIP into `p4c-barefoot` and solves **in-process**
-inside `BFN::RallocModelPass`. Two problems motivated splitting the solver out:
+The original integration links the solver into `p4c-barefoot` and solves
+**in-process** inside `BFN::RallocModelPass`. Three problems motivated splitting
+the solver out:
 
-- **SCIP is unsafe under p4c's GC-overridden `operator new`.** A second in-process
-  solve crashes in SCIP's internal allocation (papilo/rapidlearning via
-  `GC_malloc`), which forced the in-process pass to solve only once and guard with
-  `attempted_`. Running SCIP in its **own process** (its own allocator, its own
-  address space) removes the hazard entirely.
+- **A linked MILP solver is unsafe under p4c's GC-overridden `operator new`.** A
+  second in-process solve crashed inside the solver's internal allocation (with
+  SCIP: papilo/rapidlearning via `GC_malloc`), which forced the in-process pass to
+  solve only once and guard with `attempted_`. Running the solver in its **own
+  process** (its own allocator, its own address space) removes the hazard entirely.
+- **OR-Tools brings its own abseil/protobuf/re2.** p4c builds abseil and protobuf
+  itself, so linking OR-Tools into `p4c-barefoot` does not even configure without
+  switching p4c to the system libraries; in a separate binary the question does
+  not arise (Doc 05 §1.2).
 - **The model is meant to be an independent, separately buildable optimizer**
   (`model/include/ralloc/*` links no bf-p4c headers). A standalone solver binary
   makes that real and enables offline solving, caching, and parallel/remote solves.
@@ -25,7 +30,7 @@ inside `BFN::RallocModelPass`. Two problems motivated splitting the solver out:
                 model_input.json                 model_out.json
   ┌───────────────┐   │            ┌─────────────┐   │          ┌────────────────┐
   │ p4c-barefoot  │───┼──────────► │ ralloc-solve│───┼────────► │ p4c-barefoot   │
-  │ --ralloc-emit │   │            │  (SCIP)     │              │ --ralloc-resume│──► .bfa
+  │ --ralloc-emit │   │            │ (OR-Tools)  │              │ --ralloc-resume│──► .bfa
   └───────────────┘   │            └─────────────┘              └────────────────┘
         │             │                                                ▲
         └─ ir_middle.json ──────────────────────────────────────────────┘
@@ -46,13 +51,13 @@ both `ralloc-solve` and `ralloc_bridge`.
 
 ```sh
 P=build/backends/tofino/bf-p4c/p4c-barefoot
-SOLVE=model/build/ralloc-solve            # standalone, links SCIP only
+SOLVE=model/build/ralloc-solve            # standalone, the only binary linking OR-Tools
 IO=/tmp/ralloc_io
 
 # Phase 1 — emit the solver input + resume bundle, then STOP the compile.
 $P --target tofino --arch tna -I build/p4include --ralloc-emit $IO prog.p4
 
-# Phase 2 — solve out-of-process (SCIP runs here, never in p4c-barefoot).
+# Phase 2 — solve out-of-process (OR-Tools runs here, never in p4c-barefoot).
 $SOLVE $IO/model_input.json -o $IO/model_out.json --time-limit 120
 
 # Phase 3 — consume the result + bundle and finish the compile.
@@ -71,12 +76,12 @@ $P --target tofino --arch tna -I build/p4include --ralloc-resume $IO prog.p4 -o 
 `BFN::RallocEmitDone` — a control-flow signal (not a `std::exception`, so it is not
 swallowed by the pass's own fallback `catch` nor the PassManager's backtrack
 handling) that `execute_backend()` in `p4c-barefoot.cpp` catches and treats as a
-successful early exit. No SCIP runs in this process.
+successful early exit. No solver runs in this process.
 
 **Solve** (`ralloc-solve`): reads `model_input.json`, runs `ResourceModel::solveMau`
 then `solveVliw` (M2 over the legacy PHV, then M3), writes `model_out.json`. Exits
 non-zero if the solve is unusable so a driver can fall back. This is the **only**
-process that runs SCIP.
+process that runs OR-Tools.
 
 **Resume** (`--ralloc-resume <dir>`): re-runs the backend deterministically to the
 table-placement seam, then `runResume()` reads `model_out.json` + `ir_middle.json`,
@@ -97,7 +102,7 @@ already wired for commit behind `#ifdef RALLOC_COMMIT`.
 ## 6. Build targets
 
 - `ralloc-solve` (`model/CMakeLists.txt`) — standalone executable, links **only**
-  the `ralloc` core (which pulls SCIP). Built by the standalone model build
+  the `ralloc` core (which pulls OR-Tools). Built by the standalone model build
   (`cmake -S model -B model/build`).
 - `ralloc_bridge` (`backends/tofino/bf-p4c/CMakeLists.txt`) — now also compiles
   `model_json.cpp`; the emit/resume code lives in `ralloc_model_pass.cpp`.
@@ -118,10 +123,10 @@ already wired for commit behind `#ifdef RALLOC_COMMIT`.
 
 ## 8. Status & next steps
 
-- SCIP is still *linked* into `p4c-barefoot` because the legacy in-process
-  `--use-ralloc` path (Doc 06) is retained. The decoupled flow never *calls* it.
-  Fully unlinking SCIP from the compiler is possible once the in-process path is
-  retired (drop `scip_solver.cpp` from `ralloc_bridge`).
+- The compiler is now built **without** OR-Tools by default; the in-process
+  `--use-ralloc` path (Doc 06) is retained but needs
+  `-DRALLOC_INPROCESS_SOLVER=ON` (Doc 05 §1.2), and logs a pointer to this flow
+  when the solver is absent. The decoupled flow is the supported route.
 - `ir_middle.json` currently carries the id↔name bundle (sufficient for advisory
   resume, which re-derives the IR by recompiling deterministically). A future,
   recompile-free resume would also serialize the backend `IR::BFN::Pipe`

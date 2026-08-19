@@ -53,7 +53,7 @@ static void emitRow(std::ostringstream &os, const LinearModel &m, const Row &r) 
     os << senseStr(r.sense) << r.rhs;
 }
 
-/// CPLEX LP format. Sufficient for SCIP/HiGHS/Gurobi import and golden tests.
+/// CPLEX LP format. Sufficient for OR-Tools/HiGHS/Gurobi import and golden tests.
 std::string LinearModel::toLpString() const {
     std::ostringstream os;
     os << "\\ ralloc model: " << name_ << "\n";

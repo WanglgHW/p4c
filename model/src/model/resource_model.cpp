@@ -2,7 +2,7 @@
  * Copyright (C) 2026
  * SPDX-License-Identifier: Apache-2.0
  *
- * ResourceModel facade: orchestrates the staged MILP pipeline
+ * ResourceModel facade: orchestrates the staged OR-Tools pipeline
  *   M1 PHV -> M2 MAU/memory -> M3 VLIW  with C1/C5 coupling cuts (Doc 03/05).
  *
  * This file contains the real control flow; the numerical model construction is
@@ -15,7 +15,7 @@
 
 #include "ralloc/mau_model.h"
 #include "ralloc/phv_model.h"
-#include "ralloc/scip_solver.h"
+#include "ralloc/ortools_solver.h"
 #include "ralloc/vliw_model.h"
 
 namespace ralloc {
@@ -26,8 +26,8 @@ namespace ralloc {
 
 const char *version() { return RALLOC_VERSION_STRING; }
 
-bool hasScip() {
-    ScipBackend b;
+bool hasOrTools() {
+    OrToolsBackend b;
     return b.available();
 }
 
@@ -36,7 +36,7 @@ struct ResourceModel::Impl {
     std::unique_ptr<SolverBackend> solver;
 
     explicit Impl(SolveOptions o) : opt(std::move(o)) {
-        solver = makeSolver(opt.solver == SolverChoice::Scip, opt.dump_dir);
+        solver = makeSolver(opt.solver == SolverChoice::OrTools, opt.dump_dir);
     }
 
     SolverParams params(const char *model_name) const {
@@ -83,7 +83,7 @@ SolveResult ResourceModel::solvePhv(const ModelInputs &in) {
     SolveResult res;
     if (!impl_->solver->available()) {
         res.status = SolveStatus::Error;
-        res.message = "no solver available (SCIP not linked)";
+        res.message = "no solver available (OR-Tools not linked)";
         return res;
     }
     PhvModelBuilder b(in);

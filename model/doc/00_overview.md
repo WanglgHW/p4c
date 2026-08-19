@@ -3,7 +3,7 @@
 **Document set:** `model/doc/00..07`
 **Source tree:** `model/include`, `model/src`
 **Target compiler:** `backends/tofino/bf-p4c` (Intel/Barefoot Tofino & Tofino2 backend of `p4c`)
-**Solver:** [SCIP](https://www.scipopt.org/) (Solving Constraint Integer Programs)
+**Solver:** [Google OR-Tools](https://developers.google.com/optimization) (CP-SAT)
 
 ---
 
@@ -35,7 +35,7 @@ objective (minimize stages, minimize power, balance PHV pressure).
 
 This project replaces (or augments) those heuristics with a **single
 mathematical optimization model** that captures the resource constraints exactly
-and is solved to (near-)optimality by SCIP.
+and is solved to (near-)optimality by OR-Tools CP-SAT.
 
 ## 2. Goals
 
@@ -48,12 +48,12 @@ and is solved to (near-)optimality by SCIP.
 3. **Extract** model input parameters directly from the backend midend IR
    (`IR::MAU::*`, `PhvInfo`, `DependencyGraph`, `LayoutChoices`, device specs) —
    see Doc 04.
-4. **Solve** with SCIP and translate the optimal/feasible solution back into the
+4. **Solve** with OR-Tools and translate the optimal/feasible solution back into the
    backend's native data structures (`PHV::ConcreteAllocation`,
    `TableResourceAlloc`, stage assignments) so the remaining compiler stages
    (assembly emission, `bf-asm`) proceed unchanged — see Doc 05, Doc 06.
 5. **Deliver** a clean C++ interface (`model/include/ralloc/resource_model.h`)
-   that the backend can call, plus an out-of-process / in-process SCIP backend.
+   that the backend can call, plus an out-of-process / in-process OR-Tools backend.
 
 ## 3. Scope & strategy
 
@@ -103,13 +103,13 @@ research extension (Doc 03 §9) but is **not** the default because of size.
 | `02_constraints_relations.md` | Analysis | Constraint catalogue + inter-resource relations / coupling. |
 | `03_model_formulation.md` | Model | Full MILP/BILP formulation: sets, parameters, variables, objective, constraints (formulas). |
 | `04_input_extraction.md` | Integration | How each parameter is read from the bf-p4c midend IR. |
-| `05_scip_integration.md` | Solver | SCIP encoding, decomposition, warm-start, performance. |
+| `05_ortools_integration.md` | Solver | OR-Tools/CP-SAT encoding, decomposition, warm-start, performance. |
 | `06_compiler_interface.md` | Integration | The C++ API, pass insertion points, write-back, fallback. |
 | `07_implementation_plan.md` | Plan | Milestones, file-by-file work breakdown, testing & validation. |
 | `MANUAL.md` | Operations | **User manual** — build, enable (`--use-ralloc`), run, log, troubleshoot. |
 
-> **Status:** implemented and **built/tested in-tree against SCIP** — the pass
-> ingests real IR and SCIP solves the MAU+VLIW model to optimality. It ships in
+> **Status:** implemented and **built/tested in-tree against OR-Tools** — the pass
+> ingests real IR and CP-SAT solves the MAU+VLIW model to optimality. It ships in
 > **advisory mode** (solves + logs, legacy emits the binary; a proven no-op on
 > output); committing the placement awaits the memory-realization step (Doc 06
 > §4.1, Doc 07 P2). See `MANUAL.md`.
@@ -125,12 +125,12 @@ model/
 │   ├── phv_model.h           ← M1 PHV model builder
 │   ├── mau_model.h           ← M2 MAU/stage/memory model builder
 │   ├── vliw_model.h          ← M3 VLIW/action model builder
-│   ├── scip_solver.h         ← SCIP backend abstraction
+│   ├── ortools_solver.h      ← OR-Tools backend abstraction
 │   ├── compiler_bridge.h     ← IR ingestion + write-back to bf-p4c
 │   └── ralloc_model_pass.h   ← BFN::RallocModelPass (the hosting pass)
 ├── src/
 │   ├── model/                ← model builders + facade + device spec
-│   ├── solver/               ← LinearModel + SCIP backend
+│   ├── solver/               ← LinearModel + OR-Tools backend
 │   └── bridge/               ← compiler_bridge + ralloc_model_pass + spec_check
 ├── test/                     ← structural unit test
 ├── CMakeLists.txt

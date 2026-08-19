@@ -5,9 +5,9 @@
  * ralloc/linear_model.h
  *
  * A solver-agnostic representation of a MILP (Doc 05 §1). Model builders emit a
- * LinearModel; a SolverBackend (SCIP, or .lp export) consumes it. This isolates
- * the formula logic (Doc 03) from any specific solver API and enables .lp/MPS
- * export for cross-solver validation and unit tests.
+ * LinearModel; a SolverBackend (OR-Tools, or .lp export) consumes it. This
+ * isolates the formula logic (Doc 03) from any specific solver API and enables
+ * .lp/MPS export for cross-solver validation and unit tests.
  */
 #ifndef RALLOC_LINEAR_MODEL_H_
 #define RALLOC_LINEAR_MODEL_H_
@@ -42,7 +42,7 @@ struct Row {
 };
 
 /// Native indicator row (Doc 03 §8): when binary `trigger`==1, the linear row
-/// must hold. Preferred over big-M; SCIP supports it directly.
+/// must hold. Preferred over big-M; CP-SAT enforces it directly (OnlyEnforceIf).
 struct IndicatorRow {
     std::string name;
     VarRef trigger;

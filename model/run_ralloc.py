@@ -2,7 +2,7 @@
 # Copyright (C) 2026
 # SPDX-License-Identifier: Apache-2.0
 """
-run_ralloc.py — one driver for every ralloc (MILP/SCIP) operation.
+run_ralloc.py — one driver for every ralloc (MILP/OR-Tools) operation.
 
 This wraps the workflows documented in model/doc/MANUAL.md so they can be run
 with a single command instead of long copy-pasted invocations:
@@ -10,12 +10,12 @@ with a single command instead of long copy-pasted invocations:
   build     configure + build the compiler (p4c-barefoot, ralloc_bridge) and the
             standalone model core + ralloc-solve binary
   test      run the standalone model unit tests (ctest)
-  run       in-process compile with --use-ralloc (SCIP inside p4c-barefoot)
+  run       in-process compile with --use-ralloc (needs -DRALLOC_INPROCESS_SOLVER=ON)
   emit      decoupled phase 1: write model_input.json + ir_middle.json, then stop
   solve     decoupled phase 2: run ralloc-solve  (model_input.json -> model_out.json)
   resume    decoupled phase 3: consume model_out.json + ir_middle.json, finish
   flow      run emit -> solve -> resume in sequence (the whole decoupled flow)
-  verify    compile a program twice (legacy vs model/SCIP) and compare the outputs
+  verify    compile a program twice (legacy vs model/OR-Tools) and compare the outputs
 
 Paths are auto-detected relative to this script (model/ lives inside the p4c
 tree); override any of them with the global options below.
@@ -158,7 +158,7 @@ def ensure_solver(args):
 # --------------------------------------------------------------------------- #
 def cmd_build(args):
     """Configure + build the compiler and the standalone model/ralloc-solve."""
-    prefix = args.scip_prefix or brew_prefix()
+    prefix = args.ortools_prefix or brew_prefix()
     info("Building the standalone model core + ralloc-solve")
     cfg = ["cmake", "-S", MODEL_DIR, "-B", args.model_build]
     if prefix:
@@ -176,7 +176,7 @@ def cmd_build(args):
             f"  Configure the full p4c/Tofino build there first, or pass --build-dir,\n"
             f"  or use --model-only to build just the model core + ralloc-solve."
         )
-    info(f"Reconfiguring in-tree build at {args.build_dir} (to find SCIP + ralloc)")
+    info(f"Reconfiguring in-tree build at {args.build_dir} (to find ralloc)")
     cfg = ["cmake", "."]
     if prefix:
         cfg += [f"-DCMAKE_PREFIX_PATH={prefix}"]
@@ -194,12 +194,15 @@ def cmd_test(args):
         args.model_build / "CMakeCache.txt",
         f"configure/build first:  {Path(__file__).name} build --model-only",
     )
+    # The test executables are EXCLUDE_FROM_ALL, so build them before ctest.
+    info("Building model unit tests")
+    run(["cmake", "--build", args.model_build, "--target", "ralloc_tests", "-j", str(args.jobs)])
     info("Running model unit tests (ctest)")
     run(["ctest", "--test-dir", args.model_build, "--output-on-failure"])
 
 
 def cmd_run(args):
-    """In-process compile with --use-ralloc (SCIP runs inside p4c-barefoot)."""
+    """In-process compile with --use-ralloc (needs OR-Tools linked into p4c-barefoot)."""
     ensure_compiler(args)
     out = Path(args.out) if args.out else REPO_ROOT / "ralloc_run_out"
     out.mkdir(parents=True, exist_ok=True)
@@ -242,7 +245,7 @@ def cmd_solve(args):
     if args.dump_dir:
         cmd += ["--dump-dir", args.dump_dir]
     info(f"[phase 2/3 solve] {inp.name} -> {out.name}")
-    # ralloc-solve prints SCIP's banner to stderr and a one-line summary at the end.
+    # ralloc-solve prints the solver log to stderr and a one-line summary at the end.
     proc = run(cmd, check=False, capture=not args.verbose_solver)
     if proc.returncode != 0:
         if not args.verbose_solver:
@@ -324,7 +327,7 @@ def _compare_trees(orig, model):
 
 
 def cmd_verify(args):
-    """Compile twice (legacy vs model/SCIP) and compare every output artifact."""
+    """Compile twice (legacy vs model/OR-Tools) and compare every output artifact."""
     ensure_compiler(args)
     ensure_solver(args)
     work = Path(args.work)
@@ -339,7 +342,7 @@ def cmd_verify(args):
     info("RUN 1 — ORIGINAL algorithm (legacy allocator, no ralloc)")
     run(base_compile_cmd(args, args.src, orig_dir, []))
 
-    info("RUN 2 — MODEL/SCIP method (decoupled emit -> solve -> resume)")
+    info("RUN 2 — MODEL/OR-TOOLS method (decoupled emit -> solve -> resume)")
     flow_args = argparse.Namespace(**vars(args))
     flow_args.io = str(io)
     flow_args.out = str(model_dir)
@@ -374,14 +377,14 @@ def cmd_verify(args):
             data = json.loads(mout.read_text())
             stages = data.get("mau", {}).get("stages_used")
             ntables = len(data.get("mau", {}).get("tables", []))
-            info(f"Model/SCIP solution: {stages} stage(s), {ntables} table(s) "
+            info(f"Model/OR-Tools solution: {stages} stage(s), {ntables} table(s) "
                  f"(advisory — legacy still emits the binary; see MANUAL §11)")
         except (ValueError, KeyError):
             pass
 
     if real_diffs or missing:
-        die("VERIFY FAILED — the model/SCIP path changed real output (see above).")
-    info(_c("VERIFY OK — model/SCIP output is byte-identical to legacy "
+        die("VERIFY FAILED — the model/OR-Tools path changed real output (see above).")
+    info(_c("VERIFY OK — model/OR-Tools output is byte-identical to legacy "
             "(modulo run_id/build_date).", Colors.GREEN))
 
 
@@ -411,7 +414,8 @@ def build_parser():
 
     # build
     sp = sub.add_parser("build", help="configure + build compiler and ralloc-solve")
-    sp.add_argument("--scip-prefix", help="CMAKE_PREFIX_PATH for SCIP (default: `brew --prefix`)")
+    sp.add_argument("--ortools-prefix",
+                    help="CMAKE_PREFIX_PATH for OR-Tools (default: `brew --prefix`)")
     sp.add_argument("--model-only", action="store_true",
                     help="build only the standalone model core + ralloc-solve")
     sp.set_defaults(func=cmd_build)
@@ -446,7 +450,7 @@ def build_parser():
                     help="solver objective (default: stage)")
     sp.add_argument("--seed", type=int, help="solver seed")
     sp.add_argument("--dump-dir", help="dump .lp/.cip models + solver logs")
-    sp.add_argument("--verbose-solver", action="store_true", help="show full SCIP banner")
+    sp.add_argument("--verbose-solver", action="store_true", help="show the full solver log")
     sp.set_defaults(func=cmd_solve)
 
     sp = sub.add_parser("resume", help="phase 3: consume model_out.json + ir_middle.json, finish")
@@ -466,7 +470,7 @@ def build_parser():
                     help="solver objective (default: stage)")
     sp.add_argument("--seed", type=int, help="solver seed")
     sp.add_argument("--dump-dir", help="dump .lp/.cip models + solver logs")
-    sp.add_argument("--verbose-solver", action="store_true", help="show full SCIP banner")
+    sp.add_argument("--verbose-solver", action="store_true", help="show the full solver log")
     add_trace(sp)
     sp.set_defaults(func=cmd_flow)
 
@@ -481,7 +485,7 @@ def build_parser():
                     help="solver objective (default: stage)")
     sp.add_argument("--seed", type=int, help="solver seed")
     sp.add_argument("--dump-dir", help="dump .lp/.cip models + solver logs")
-    sp.add_argument("--verbose-solver", action="store_true", help="show full SCIP banner")
+    sp.add_argument("--verbose-solver", action="store_true", help="show the full solver log")
     add_trace(sp)
     sp.set_defaults(func=cmd_verify)
 

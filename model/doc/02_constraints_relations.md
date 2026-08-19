@@ -84,7 +84,7 @@ Notation: see Doc 03 §1 for the formal sets. Here we use informal names.
 
 Default lexicographic objective: **feasibility ≻ min stages (O1) ≻ min power (O3)
 ≻ min PHV (O2)**, implemented via weighted sum with widely separated weights or
-SCIP's native lexicographic/Pareto support (Doc 05 §4).
+OR-Tools' lexicographic solve loop (Doc 05 §4).
 
 ---
 
@@ -129,4 +129,4 @@ handles each, are the crux of the design:
 
 Naive monolithic binary vars ≈ |S|·|C| + |T|·|G| + |A|·|G|·rows ≈ 10⁶–10⁷.
 Decomposition + symmetry reduction (Doc 03 §8) brings each sub-model to 10⁴–10⁵
-binaries, well within SCIP's reach with the warm-starts of Doc 05.
+binaries, well within CP-SAT's reach with the warm-starts of Doc 05.

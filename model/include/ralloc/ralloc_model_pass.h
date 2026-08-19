@@ -95,7 +95,7 @@ class RallocModelPass : public P4::Transform, public P4::Backtrack {
     TablesMutuallyExclusive &mutex_;
     P4::Visitor *fallback_;
 
-    // The MILP solve is advisory (its result is logged, not committed) and SCIP's
+    // The MILP solve is advisory (its result is logged, not committed) and the solver's
     // heavy allocation is unsafe to repeat under p4c's GC-overridden operator new.
     // TableSummary drives several table-placement rounds via backtracking, which
     // re-enters this pass; we therefore solve the model only on the first round and

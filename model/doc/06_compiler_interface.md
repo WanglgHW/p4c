@@ -18,7 +18,7 @@ ResumeBundle   (compiler → compiler): solver-id ↔ stable-IR-name map, so a r
                                        computed out-of-process can be re-attached
 ```
 
-Neither the model core nor the SCIP backend includes any bf-p4c IR header. Only
+Neither the model core nor the OR-Tools backend includes any bf-p4c IR header. Only
 `compiler_bridge.{h,cpp}` (which *does* include IR headers) translates between IR
 and these PODs. A dependency-free JSON layer, `model_json.{h,cpp}`
 (`writeModelInputs`/`readModelInputs`, `writeModelResults`/`readModelResults`,
@@ -79,9 +79,9 @@ would have run, and `fallback` is the real legacy `table_alloc` it wraps.
 2. `CompilerBridge::ingest()` → `ModelInputs`; `validate()`.
 3. Branch:
    - **emit** (`options.ralloc_emit_dir` set): write the inputs + resume bundle to
-     disk and **stop** the compile (§2.1). No SCIP in this process.
+     disk and **stop** the compile (§2.1). No solver in this process.
    - **resume** (`options.ralloc_resume_dir` set): `runResume()` consumes the
-     out-of-process result (§4.2). No SCIP in this process.
+     out-of-process result (§4.2). No solver in this process.
    - **in-process** (plain `--use-ralloc`): `ResourceModel::solveMau(...)` then
      `solveVliw(...)` (M2 over legacy PHV, M3), then commit/advisory (§4).
 4. **Advisory mode** (default): log the placement, then `runFallback()` = apply the
@@ -91,8 +91,8 @@ would have run, and `fallback` is the real legacy `table_alloc` it wraps.
    stop signal `BFN::RallocEmitDone` is intentionally **not** a `std::exception`, so
    it escapes this catch and the `PassManager` backtrack handling; it is caught by
    `execute_backend()` in `p4c-barefoot.cpp` as a clean early exit.)
-6. SCIP is solved only once: a second invocation (backtrack re-entry) delegates
-   straight to legacy (`attempted_` guard), since SCIP is unsafe to re-run under
+6. The model is solved only once: a second invocation (backtrack re-entry)
+   delegates straight to legacy (`attempted_` guard), as a linked solver is unsafe to re-run under
    p4c's GC-overridden `operator new`. The decoupled flow avoids this entirely by
    solving in a separate process.
 
@@ -135,7 +135,7 @@ The header (delivered in `model/include/ralloc/resource_model.h`) declares:
 namespace ralloc {
 
 enum class Objective { Feasibility, MinStages, MinPower, MinPhv, Lexicographic };
-enum class SolverChoice { Scip, LpExportOnly };
+enum class SolverChoice { OrTools, LpExportOnly };
 
 struct SolveOptions {
   double       time_limit_s      = 120.0;
@@ -144,10 +144,10 @@ struct SolveOptions {
   bool         fine_memory       = false;   // M2-fine 2-D RAM packing
   int          max_coupling_iters = 8;
   bool         warm_start        = true;
-  bool         deterministic     = true;    // fixed seed, single thread
+  bool         deterministic     = true;    // fixed seed, single worker
   unsigned     seed              = 1;
-  SolverChoice solver            = SolverChoice::Scip;
-  std::string  dump_dir;                     // if set, dump .lp/.cip + logs
+  SolverChoice solver            = SolverChoice::OrTools;
+  std::string  dump_dir;                     // if set, dump .lp/.pb.txt + logs
 };
 
 enum class SolveStatus { Optimal, Feasible, Infeasible, TimeoutNoSolution, Error };
@@ -163,7 +163,7 @@ class ResourceModel {
   SolveResult solveVliw(const ModelInputs&, const MauResult&);
 };
 
-bool hasScip();   // false if SCIP not linked (⇒ fall back / .lp export only)
+bool hasOrTools();  // false if OR-Tools not linked (⇒ fall back / .lp export only)
 
 } // namespace ralloc
 ```
@@ -249,7 +249,7 @@ in-process one and shares `writeBack()`/`placementWriter()`.
 The model is an **optional optimizer**, gated by `--use-ralloc` (default off until
 validated). The contract:
 
-1. If SCIP is not linked, or the solve returns `Infeasible/TimeoutNoSolution/
+1. If OR-Tools is not linked, or the solve returns `Infeasible/TimeoutNoSolution/
    Error`, or write-back validation fails, **or any exception is thrown during
    ingest/solve** (`Util::CompilerBug`/`std::exception` are caught),
    `RallocModelPass` runs the **legacy** `table_alloc` it wraps (passed in as the
@@ -290,7 +290,7 @@ flags (time-limit/gap/objective/fine-memory/dump/fallback) remains a follow-up.
 
 ## 7. Logging & explainability
 
-On `--ralloc-dump`, emit per sub-model: the `.lp` model, SCIP statistics, the
+On `--ralloc-dump`, emit per sub-model: the `.lp` model, the CP-SAT proto + search log, the
 final utilization table (per stage: srams/tcams/ixbar/… used vs. budget), and a
 human-readable placement report compatible with the existing `.res.json`/table
 summary so existing tooling and visualizers keep working.
@@ -307,8 +307,8 @@ checkpoints the wrapper and rewinds table placement exactly as for the bare
 legacy pass. (`PHVTrigger::failure` is owned by the separate `MauBacktracker`, so
 delegating returns `false` for it and the manager walks back to that handler.)
 
-On a backtrack re-entry the MILP is **not** re-solved: it is advisory and SCIP is
-unsafe to re-run under p4c's GC, so an `attempted_` guard delegates straight to
+On a backtrack re-entry the MILP is **not** re-solved: it is advisory and a linked
+solver is unsafe to re-run under p4c's GC, so an `attempted_` guard delegates straight to
 legacy after the first round. *Future:* re-invoke the solver with the new
 constraint added to `ModelInputs` (forced container / forbidden stage) and a
 warm start — trivially safe in the decoupled flow, where each solve is a fresh

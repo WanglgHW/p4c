@@ -555,18 +555,43 @@ target_include_directories(tofinobackend PRIVATE
 add_dependencies(tofinobackend frontend genLogging bfn_p4runtime)
 
 # ---------------------------------------------------------------------------
-# ralloc: experimental MILP/SCIP resource allocator (model/). Built as a
+# ralloc: experimental MILP/OR-Tools resource allocator (model/). Built as a
 # separate library that inherits tofinobackend's include environment (so the
 # bridge can see bf-p4c + generated IR headers) and is linked back into the
 # backend. Enabled at runtime by --use-ralloc; a no-op otherwise. See model/doc.
 # ---------------------------------------------------------------------------
 set(RALLOC_DIR ${CMAKE_SOURCE_DIR}/model)
 if(EXISTS ${RALLOC_DIR}/include/ralloc/ralloc_model_pass.h)
-  find_package(SCIP CONFIG QUIET)
-  if(SCIP_FOUND)
-    message(STATUS "ralloc: SCIP found — MILP solving enabled")
+  # ---- in-process solver: opt-in ------------------------------------------
+  # OR-Tools brings its own abseil, protobuf and re2. p4c normally builds abseil
+  # and protobuf itself (FetchContent), and then find_package(ortools) cannot
+  # even configure — its find_dependency(absl) collides with p4c's own absl::*
+  # targets — and two copies of abseil/protobuf in one binary would be an ODR
+  # hazard anyway. So the compiler links OR-Tools only on explicit opt-in, and
+  # only when p4c itself uses the system abseil that OR-Tools was built against:
+  #   cmake -DP4C_USE_PREINSTALLED_ABSEIL=ON -DRALLOC_INPROCESS_SOLVER=ON .
+  # With the default (OFF) the bridge is solver-free and every solve happens in
+  # the standalone `ralloc-solve` process, i.e. the decoupled flow
+  # --ralloc-emit -> ralloc-solve -> --ralloc-resume (model/doc/08).
+  option(RALLOC_INPROCESS_SOLVER
+    "Link OR-Tools into p4c-barefoot so --use-ralloc can solve in process" OFF)
+  set(RALLOC_ORTOOLS OFF)
+  if(RALLOC_INPROCESS_SOLVER AND absl_FOUND)
+    find_package(ortools CONFIG QUIET)
+    if(ortools_FOUND)
+      set(RALLOC_ORTOOLS ON)
+      message(STATUS "ralloc: OR-Tools found — in-process CP-SAT/MILP solving enabled")
+    else()
+      message(WARNING "ralloc: RALLOC_INPROCESS_SOLVER=ON but OR-Tools was not found; "
+                      "solve out of process with ralloc-solve instead")
+    endif()
+  elseif(RALLOC_INPROCESS_SOLVER)
+    message(WARNING "ralloc: RALLOC_INPROCESS_SOLVER=ON also needs p4c to share the system "
+                    "abseil (-DP4C_USE_PREINSTALLED_ABSEIL=ON); keeping the compiler "
+                    "solver-free")
   else()
-    message(STATUS "ralloc: SCIP not found — .lp export only (legacy fallback)")
+    message(STATUS "ralloc: compiler built without OR-Tools — solve out of process with "
+                   "ralloc-solve (--ralloc-emit / --ralloc-resume)")
   endif()
   add_library(ralloc_bridge STATIC
     ${RALLOC_DIR}/src/model/device_spec.cpp
@@ -576,7 +601,7 @@ if(EXISTS ${RALLOC_DIR}/include/ralloc/ralloc_model_pass.h)
     ${RALLOC_DIR}/src/model/resource_model.cpp
     ${RALLOC_DIR}/src/model/model_json.cpp
     ${RALLOC_DIR}/src/solver/linear_model.cpp
-    ${RALLOC_DIR}/src/solver/scip_solver.cpp
+    ${RALLOC_DIR}/src/solver/ortools_solver.cpp
     ${RALLOC_DIR}/src/bridge/compiler_bridge.cpp
     ${RALLOC_DIR}/src/bridge/spec_check.cpp
     ${RALLOC_DIR}/src/bridge/ralloc_model_pass.cpp
@@ -585,12 +610,12 @@ if(EXISTS ${RALLOC_DIR}/include/ralloc/ralloc_model_pass.h)
   # Inherit the backend's include dirs (bf-p4c sources + generated IR headers).
   target_include_directories(ralloc_bridge PRIVATE
     $<TARGET_PROPERTY:tofinobackend,INCLUDE_DIRECTORIES>)
-  target_compile_definitions(ralloc_bridge PRIVATE
-    RALLOC_WITH_BFP4C=1
-    RALLOC_HAVE_SCIP=$<BOOL:${SCIP_FOUND}>)
-  if(SCIP_FOUND)
-    target_link_libraries(ralloc_bridge PUBLIC ${SCIP_LIBRARIES})
-    target_include_directories(ralloc_bridge PRIVATE ${SCIP_INCLUDE_DIRS})
+  target_compile_definitions(ralloc_bridge PUBLIC
+    RALLOC_HAVE_ORTOOLS=$<BOOL:${RALLOC_ORTOOLS}>)
+  target_compile_definitions(ralloc_bridge PRIVATE RALLOC_WITH_BFP4C=1)
+  if(RALLOC_ORTOOLS)
+    # ortools::ortools brings its own include dirs plus abseil/protobuf/re2.
+    target_link_libraries(ralloc_bridge PUBLIC ortools::ortools)
   endif()
   # Generated IR headers must exist before the bridge compiles.
   add_dependencies(ralloc_bridge ir frontend genLogging bfn_p4runtime)
@@ -662,7 +687,7 @@ endif()
 # Link the ralloc MILP allocator into the executable. Object libraries do not
 # propagate transitive link deps, so libralloc_bridge.a (whose RallocModelPass is
 # referenced from backend.cpp) must be brought in explicitly here. It transitively
-# pulls SCIP via its PUBLIC link.
+# pulls OR-Tools via its PUBLIC link.
 if(TARGET ralloc_bridge)
   target_link_libraries(p4c-barefoot ralloc_bridge)
   # p4c-barefoot.cpp is its own translation unit (not part of tofinobackend), so it

@@ -9,9 +9,9 @@ Status legend: ✅ done & tested in-tree · 🟡 partial · ⬜ not started.
 
 | Phase | Goal | Status | Notes |
 |---|---|---|---|
-| **P0 Scaffolding** | buildable skeleton + APIs | ✅ | `libralloc` + unit test build; SCIP auto-detected. |
+| **P0 Scaffolding** | buildable skeleton + APIs | ✅ | `libralloc` + unit test build; OR-Tools auto-detected. |
 | **P1 Bridge in** | IR → `ModelInputs` | ✅ | `compiler_bridge.cpp::ingest()` compiles & runs on real IR. |
-| **P2 M2 MAU** | table→stage MILP | 🟡 | M2 builds & **SCIP solves to optimality** on test program; the **memory-realization write-back is the open item** (advisory mode, Doc 06 §4.1). |
+| **P2 M2 MAU** | table→stage MILP | 🟡 | M2 builds & **OR-Tools solves to optimality** on test program; the **memory-realization write-back is the open item** (advisory mode, Doc 06 §4.1). |
 | **P3 M1 PHV** | field→container MILP | 🟡 | `phv_model.cpp` core constraints implemented; not yet driven in-tree (M2-first consumes legacy PHV). |
 | **P4 M3 VLIW** | action→imem MILP | 🟡 | `vliw_model.cpp` row-coloring implemented & solved; action-data bus packing TODO. |
 | **P5 Couplings** | C1/C5 Benders loop, warm-start | 🟡 | loop in `resource_model.cpp`; warm-start TODO. |
@@ -32,10 +32,10 @@ from legacy PHV). This is the integration that ships today.
 
 ### 1.1 Verified results (this build)
 
-- Builds clean against real bf-p4c headers + SCIP 10; `ralloc_bridge` links into
+- Builds clean against real bf-p4c headers + OR-Tools 9.15; `ralloc_bridge` links into
   `p4c-barefoot`.
 - On a 2-table TNA program: `ralloc: MILP solved — 1 stage(s), 3 table(s)`,
-  `SCIP Status: optimal solution found` (M2 and M3).
+  CP-SAT status `OPTIMAL` (M2 and M3).
 - `--use-ralloc` output `.bfa` byte-identical to baseline except `run_id`
   (no regression); fallback-on-exception verified. See `doc/MANUAL.md`.
 
@@ -50,7 +50,7 @@ model/include/ralloc/
   phv_model.h        P3   PhvModelBuilder
   mau_model.h        P2   MauModelBuilder
   vliw_model.h       P4   VliwModelBuilder
-  scip_solver.h      P0   SolverBackend + ScipBackend
+  ortools_solver.h   P0   SolverBackend + OrToolsBackend
   compiler_bridge.h  P1   CompilerBridge (ingest/writeBack/validate)
 
 model/src/
@@ -58,7 +58,7 @@ model/src/
   model/mau_model.cpp     P2
   model/vliw_model.cpp    P4
   model/resource_model.cpp P5  (orchestration, coupling loop, warm-start)
-  solver/scip_solver.cpp  P2
+  solver/ortools_solver.cpp  P2
   solver/linear_model.cpp P0  (LinearModel construction helpers, .lp export)
   bridge/compiler_bridge.cpp P1
   CMakeLists.txt          P0
@@ -67,8 +67,9 @@ model/src/
 ## 3. Build integration
 
 - `model/CMakeLists.txt` builds `libralloc` (core, no bf-p4c deps) and
-  `libralloc_bridge` (links IR). SCIP via `find_package(SCIP CONFIG)`;
-  `target_compile_definitions(ralloc PUBLIC RALLOC_HAVE_SCIP=$<BOOL:${SCIP_FOUND}>)`.
+  `libralloc_bridge` (links IR). OR-Tools via `find_package(ortools CONFIG)`;
+  `target_compile_definitions(ralloc PUBLIC RALLOC_HAVE_ORTOOLS=${RALLOC_HAVE_ORTOOLS})`.
+  In the compiler the link is opt-in (`-DRALLOC_INPROCESS_SOLVER=ON`, Doc 05 §1.2).
 - Hook into the top-level build by adding `add_subdirectory(model)` and linking
   `libralloc_bridge` into the tofino backend target
   (`backends/tofino/bf-p4c/CMakeLists.txt`, target `tofinobackend`).
@@ -78,10 +79,10 @@ model/src/
 
 ## 4. Testing strategy
 
-1. **Unit (no compiler, no SCIP):** feed JSON `ModelInputs` fixtures, build
+1. **Unit (no compiler, no solver):** feed JSON `ModelInputs` fixtures, build
    `LinearModel`, assert variable/row counts and `.lp` text against goldens.
    Validates the formulas of Doc 03 directly.
-2. **Solver unit (SCIP):** small hand-built instances (like Doc 03 §6) with known
+2. **Solver unit (OR-Tools, `test_ortools_solver.cpp`):** small hand-built instances (like Doc 03 §6) with known
    optimum; assert objective + a valid assignment.
 3. **Bridge tests:** run `CompilerBridge::ingest` on a curated set of `.p4`
    programs from `testdata/` and snapshot `ModelInputs`.
@@ -101,7 +102,7 @@ model/src/
 | Spec drift between model and backend | `static_assert` spec bridge (§3) |
 | Coupling loop non-termination | iteration cap `K` + monotone no-good cuts + fallback (Doc 05 §5) |
 | Hidden constraints not in our catalogue | self-validation reuses legacy checkers; fallback on any violation (Doc 06 §5) |
-| SCIP licensing/availability in CI | optional dependency; `.lp` export path lets HiGHS run in CI |
+| OR-Tools availability in CI | optional dependency; `.lp` export path lets HiGHS run in CI |
 | Determinism | fixed seed, single-thread default (Doc 05 §8) |
 
 ## 6. Acceptance criteria (definition of done)

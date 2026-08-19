@@ -143,7 +143,7 @@ const IR::Node *RallocModelPass::preorder(IR::BFN::Pipe *pipe) {
 
     // Backtracking (RerunTablePlacementTrigger / PHVTrigger from TableSummary)
     // re-enters this pass for each additional table-placement round. The MILP is
-    // advisory and SCIP is unsafe to re-run under the GC, so solve only once and
+    // advisory and the solver is unsafe to re-run under the GC, so solve once and
     // delegate to the legacy allocator on every subsequent (backtrack) round.
     if (attempted_) return runFallback(pipe);
     attempted_ = true;
@@ -188,7 +188,7 @@ const IR::Node *RallocModelPass::preorder(IR::BFN::Pipe *pipe) {
 
         // ---- decoupled (out-of-process) flow -------------------------------
         // --ralloc-emit: write the solver input + the resume bundle and stop the
-        // compile here (no SCIP in this process). The standalone `ralloc-solve`
+        // compile here (no solver in this process). The standalone `ralloc-solve`
         // then turns model_input.json into model_out.json.
         if (!options_.ralloc_emit_dir.empty()) {
             const std::string &dir = options_.ralloc_emit_dir;
@@ -201,9 +201,19 @@ const IR::Node *RallocModelPass::preorder(IR::BFN::Pipe *pipe) {
         }
 
         // --ralloc-resume: consume the solver's model_out.json (joined to the
-        // resume bundle by stable name) instead of running SCIP in-process.
+        // resume bundle by stable name) instead of solving in-process.
         if (!options_.ralloc_resume_dir.empty()) {
             return runResume(pipe, inputs, bridge);
+        }
+
+        // In-process solving needs OR-Tools linked into the compiler, which is
+        // opt-in (-DRALLOC_INPROCESS_SOLVER=ON, see backends/tofino/bf-p4c/
+        // CMakeLists.txt); the decoupled flow is the supported default.
+        if (!ralloc::hasOrTools()) {
+            LOG1("ralloc: OR-Tools is not linked into the compiler; use the decoupled flow "
+                 "(--ralloc-emit -> ralloc-solve -> --ralloc-resume) or configure with "
+                 "-DRALLOC_INPROCESS_SOLVER=ON. Falling back to the legacy allocator.");
+            return runFallback(pipe);
         }
 
         // ---- solve M2 (MAU/memory) consuming the legacy PHV, then M3 (VLIW) -
